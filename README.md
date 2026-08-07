@@ -16,6 +16,7 @@
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" />
   <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white" />
   <img alt="Status: Preview" src="https://img.shields.io/badge/status-preview-8B5CF6" />
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22C55E" /></a>
 </p>
 
 <p align="center">
@@ -213,7 +214,7 @@ uv run ija-maintenance restore-smoke D:\ija-backups\snapshot
 
 ## 📄 许可
 
-当前仓库尚未附带开源许可证。源码公开可见不等于授权复制、修改或再分发；除非版权所有者另行书面授权，保留全部权利。正式采用许可证后，本节与仓库根目录的 `LICENSE` 将同步更新。
+本项目采用 [MIT License](LICENSE)。你可以自由使用、复制、修改、合并、发布和分发本项目，但须保留原始版权与许可声明。
 
 ---
 

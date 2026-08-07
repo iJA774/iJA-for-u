@@ -8,11 +8,14 @@ version = "0.1.0"
 description = "面向私聊与群聊场景的拟人聊天 Agent 核心"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["agent", "chatbot", "llm", "memory", "onebot", "self-hosted"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",
     "Framework :: FastAPI",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
