@@ -1,0 +1,178 @@
+[server]
+host = "127.0.0.1"
+port = 8000
+# 正常 ija 入口首次启动会生成并安全存储 Token；空值只供显式嵌入/测试装配。
+trusted_hosts = ["127.0.0.1", "localhost", "::1"]
+trusted_origins = []
+event_history_capacity = 1000
+event_subscriber_queue_capacity = 100
+
+[model]
+mode = "fake"
+protocol = "openai_chat"
+base_url = "https://api.openai.com/v1"
+name = ""
+profile_protocol = "openai_chat"
+profile_base_url = ""
+profile_name = ""
+timeout_seconds = 60.0
+max_tokens = 500
+context_window_tokens = 16384
+max_concurrency = 4
+min_request_interval_seconds = 0.0
+temperature = 0.8
+supports_json_object = true
+supports_tools = true
+supports_vision = false
+supports_streaming = false
+use_max_completion_tokens = false
+
+[image_model]
+enabled = false
+base_url = "https://api.openai.com/v1"
+name = ""
+timeout_seconds = 120.0
+
+[vision_model]
+mode = "main"
+protocol = "openai_chat"
+base_url = "https://api.openai.com/v1"
+name = ""
+timeout_seconds = 60.0
+wait_seconds = 5.0
+
+[expression_selection]
+candidate_count = 8
+direct_score_threshold = 0.55
+direct_margin_threshold = 0.10
+minimum_fallback_score = 0.18
+visual_rerank_enabled = true
+
+[detection_model]
+enabled = false
+base_url = "https://api.openai.com/v1"
+name = ""
+timeout_seconds = 60.0
+
+[embedding]
+enabled = true
+base_url = "https://api.openai.com/v1"
+name = ""
+timeout_seconds = 30.0
+
+[chat]
+private_debounce_ms = 800
+group_debounce_ms = 1200
+group_reply_threshold = 80
+group_trigger_count = 3
+group_frequency_factor = 0.9
+recent_context_messages = 60
+max_attachment_bytes = 10485760
+
+[memory]
+enabled = true
+retrieval_limit = 8
+max_context_chars = 4000
+max_context_tokens = 1200
+consolidation_context_messages = 24
+minimum_confidence = 0.55
+automatic_max_items_per_run = 12
+retrieval_min_score = 0.12
+retrieval_per_kind_limit = 3
+vector_score_threshold = 0.45
+vector_score_thresholds = { procedure = 0.45, preference = 0.45, event = 0.45, episode = 0.45, relationship = 0.45, profile = 0.45 }
+rrf_k = 60
+keyword_rrf_weight = 0.5
+inject_procedure_preference_limit = 4
+inject_event_profile_limit = 2
+inject_episode_relationship_limit = 3
+
+[social_learning]
+enabled = true
+context_messages = 60
+minimum_new_user_messages = 4
+maximum_items_per_kind = 12
+model_max_tokens = 1400
+jargon_inference_thresholds = [2, 4, 8, 25, 100]
+jargon_injection_limit = 8
+jargon_reuse_limit = 3
+jargon_reuse_min_occurrences = 4
+jargon_reuse_min_confidence = 0.75
+expression_injection_limit = 3
+behavior_injection_limit = 3
+minimum_confidence = 0.55
+expression_match_threshold = 0.16
+behavior_match_threshold = 0.16
+expression_vector_enabled = true
+expression_vector_batch_size = 64
+expression_vector_cluster_max = 32
+expression_vector_cluster_pool_size = 4
+expression_vector_candidate_pool_size = 50
+expression_vector_item_weight = 0.7
+expression_vector_cluster_weight = 0.1
+expression_vector_lexical_weight = 0.2
+expression_vector_diversity_lambda = 0.85
+behavior_scene_analysis_enabled = true
+behavior_graph_enabled = true
+behavior_graph_spread_depth = 1
+behavior_scene_cluster_reuse_threshold = 0.72
+behavior_graph_direct_lock_threshold = 0.6
+feedback_max_attempts = 3
+maintenance_interval_hours = 24
+jargon_decay_after_days = 90
+jargon_decay_period_days = 30
+jargon_decay_step = 0.05
+jargon_disable_after_days = 365
+expression_decay_after_days = 30
+expression_decay_period_days = 30
+expression_decay_step = 0.08
+expression_disable_after_days = 180
+behavior_unused_decay_after_days = 14
+behavior_unanswered_decay_after_days = 21
+behavior_positive_stale_decay_after_days = 60
+behavior_unused_disable_after_days = 60
+
+[persona]
+active_character_id = "default"
+
+[tools]
+max_rounds = 4
+max_calls = 8
+weather_timeout_seconds = 10.0
+weather_max_response_bytes = 262144
+
+[schedule]
+default_timezone = "Asia/Shanghai"
+minimum_interval_minutes = 5
+max_active_per_session = 20
+max_concurrency = 4
+
+[proactive]
+scheduler_interval_seconds = 60
+default_poll_interval_minutes = 30
+max_candidates_per_tick = 10
+max_concurrency = 4
+judge_threshold = 0.70
+candidate_retention_days = 30
+feed_timeout_seconds = 10.0
+feed_max_response_bytes = 1048576
+feed_max_redirects = 3
+
+[drift]
+scheduler_interval_seconds = 300
+idle_hours = 12
+minimum_interval_hours = 24
+max_auto_resumes = 3
+
+[platform_plugins]
+enabled = []
+disabled = []
+callback_max_body_bytes = 262144
+
+[authorization]
+# 仅精确匹配 platform + account_id + actor_id；禁止 wildcard，默认无人拥有工作区写权限。
+workspace_administrators = []
+
+[storage]
+data_dir = "./data"
+database_name = "ija.sqlite3"
