@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ija-for-u"
+version = "0.1.0"
+description = "面向私聊与群聊场景的拟人聊天 Agent 核心"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+keywords = ["agent", "chatbot", "llm", "memory", "onebot", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "alembic>=1.14.0",
+    "cryptography>=44.0.0",
+    "defusedxml>=0.7.1",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
+    "pillow>=11.1.0",
+    "pydantic>=2.10.0",
+    "pyyaml>=6.0.2",
+    "python-multipart>=0.0.20",
+    "python-dateutil>=2.9.0",
+    "sqlalchemy>=2.0.36",
+    "tomli-w>=1.1.0",
+    "tzdata>=2025.2",
+    "uvicorn[standard]>=0.34.0",
+    "websockets>=14.2",
+]
+
+[project.urls]
+Repository = "https://github.com/iJA774/ija"
+Issues = "https://github.com/iJA774/ija/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "pyright>=1.1.390",
+    "ruff>=0.9.0",
+]
+
+[project.scripts]
+ija = "main:run"
+ija-maintenance = "maintenance_cli:main"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = ["src", "plugins"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --basetemp=.pytest-tmp"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = [".venv", "frontend", "reference_project", "参考"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
