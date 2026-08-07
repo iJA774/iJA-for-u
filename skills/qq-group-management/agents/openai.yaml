@@ -1,0 +1,4 @@
+interface:
+  display_name: "QQ群管理"
+  short_description: "仅供群主或管理员身份的 iJA 与发起者执行 QQ 群管理操作"
+  default_prompt: "使用 $qq-group-management 在当前 QQ 群中执行一次经过授权的群管理操作。"

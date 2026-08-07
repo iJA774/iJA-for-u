@@ -1,0 +1,3 @@
+api_version = 1
+entrypoint = "runtime.py:create_plugin"
+capabilities = ["skill-builder"]

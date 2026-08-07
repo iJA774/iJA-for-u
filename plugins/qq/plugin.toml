@@ -1,0 +1,46 @@
+id = "qq"
+name = "QQ 开放平台机器人"
+kind = "channel"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "explicit"
+
+[capabilities]
+platform = "qq"
+display_name = "QQ 官方机器人"
+limitations = [
+  "首版附件只规范化为文本占位，不形成图片、语音或文件 canonical component。",
+  "尚未提供 ASR、OCR 或合并转发展开。",
+  "官方出站当前只实现文本消息。",
+]
+
+[capabilities.ingress]
+text = "supported"
+mention = "supported"
+quote = "unsupported"
+image = "placeholder"
+audio = "placeholder"
+file = "placeholder"
+forward = "unsupported"
+
+[capabilities.processing]
+image_description = "unsupported"
+expression_asset = "unsupported"
+audio_transcript = "unsupported"
+ocr_text = "unsupported"
+forward_expansion = "unsupported"
+
+[capabilities.prompt_projection]
+text = "supported"
+mention = "supported"
+quote = "unsupported"
+image_description = "unsupported"
+audio_transcript = "unsupported"
+file_metadata = "placeholder"
+forward_expansion = "unsupported"
+
+[capabilities.egress]
+text = "supported"
+image = "unsupported"
+audio = "unsupported"
+file = "unsupported"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "创建 Skill"
+  short_description: "生成、扫描、实测并经用户审批安装带受限脚本的可移植 Skill"
+  default_prompt: "使用 $skill-creator 从已验证工作中创建一个可完整审查的 Skill 草案；需要脚本时遵循 JSON 沙箱契约。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "行动项按负责人汇总"
+  short_description: "将JSON格式的会议行动项按负责人分组，统计总任务数、已完成数，并整理未完成任务列表"
+  default_prompt: "使用 $action-item-summary-by-owner 完成对应任务。"

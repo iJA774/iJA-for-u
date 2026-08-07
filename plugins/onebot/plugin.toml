@@ -1,0 +1,47 @@
+id = "onebot"
+name = "OneBot 协议 QQ 机器人"
+kind = "channel"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "explicit"
+requires = ["delayed_reply"]
+
+[capabilities]
+platform = "onebot"
+display_name = "OneBot QQ"
+limitations = [
+  "入站语音、文件和合并转发当前只形成文本占位。",
+  "尚未提供 ASR、OCR 或合并转发展开。",
+  "出站图片、语音与文件依赖 OneBot 实现支持对应 API。",
+]
+
+[capabilities.ingress]
+text = "supported"
+mention = "supported"
+quote = "supported"
+image = "supported"
+audio = "placeholder"
+file = "placeholder"
+forward = "placeholder"
+
+[capabilities.processing]
+image_description = "supported"
+expression_asset = "supported"
+audio_transcript = "unsupported"
+ocr_text = "unsupported"
+forward_expansion = "unsupported"
+
+[capabilities.prompt_projection]
+text = "supported"
+mention = "supported"
+quote = "supported"
+image_description = "supported"
+audio_transcript = "unsupported"
+file_metadata = "placeholder"
+forward_expansion = "placeholder"
+
+[capabilities.egress]
+text = "supported"
+image = "supported"
+audio = "supported"
+file = "supported"

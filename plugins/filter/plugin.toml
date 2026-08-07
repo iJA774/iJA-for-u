@@ -1,0 +1,6 @@
+id = "filter"
+name = "输出过滤器"
+kind = "egress"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "automatic"

@@ -1,0 +1,6 @@
+id = "delayed_reply"
+name = "私聊延迟回复"
+kind = "ingress"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "explicit"

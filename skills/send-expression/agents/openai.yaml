@@ -1,0 +1,4 @@
+interface:
+  display_name: "发送角色表情"
+  short_description: "优先复用现有角色表情，必要时生成新图并准备自然的图片回复"
+  default_prompt: "使用 $send-expression 在合适的对话中复用或生成一张角色表情。"

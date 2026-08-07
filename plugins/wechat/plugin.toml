@@ -1,0 +1,46 @@
+id = "wechat"
+name = "微信服务号"
+kind = "channel"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "explicit"
+
+[capabilities]
+platform = "wechat-service-account"
+display_name = "微信服务号"
+limitations = [
+  "图片、语音和位置等事件当前只形成文本占位或平台 Recognition 文本。",
+  "尚未提供本地 ASR、OCR 或合并转发展开。",
+  "客服消息出站当前只实现文本。",
+]
+
+[capabilities.ingress]
+text = "supported"
+mention = "unsupported"
+quote = "unsupported"
+image = "placeholder"
+audio = "placeholder"
+file = "unsupported"
+forward = "unsupported"
+
+[capabilities.processing]
+image_description = "unsupported"
+expression_asset = "unsupported"
+audio_transcript = "placeholder"
+ocr_text = "unsupported"
+forward_expansion = "unsupported"
+
+[capabilities.prompt_projection]
+text = "supported"
+mention = "unsupported"
+quote = "unsupported"
+image_description = "unsupported"
+audio_transcript = "placeholder"
+file_metadata = "unsupported"
+forward_expansion = "unsupported"
+
+[capabilities.egress]
+text = "supported"
+image = "unsupported"
+audio = "unsupported"
+file = "unsupported"

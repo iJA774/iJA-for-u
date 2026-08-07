@@ -1,0 +1,4 @@
+interface:
+  display_name: "本地拉黑"
+  short_description: "在对方屡次严重违规且提醒不改后，将对方拉入本地黑名单"
+  default_prompt: "使用 $local-blacklist 在穷尽提醒后拉黑屡次严重违规的用户。"

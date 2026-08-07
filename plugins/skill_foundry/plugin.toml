@@ -1,0 +1,16 @@
+id = "skill_foundry"
+name = "Skill 工坊"
+version = "0.2.0"
+
+[contributes]
+skill_roots = ["skills"]
+required_scopes = ["workspace:skills:write"]
+
+[[managed_services]]
+name = "builder"
+command = ["{python}", "controller.py", "--project-root", "{project_root}"]
+working_directory = "."
+capabilities = ["skill-builder"]
+startup_timeout_seconds = 5
+request_timeout_seconds = 30
+shutdown_timeout_seconds = 8
