@@ -37,8 +37,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/iJA774/ija"
-Issues = "https://github.com/iJA774/ija/issues"
+Repository = "https://github.com/iJA774/iJA-for-u"
+Issues = "https://github.com/iJA774/iJA-for-u/issues"
 
 [project.optional-dependencies]
 dev = [

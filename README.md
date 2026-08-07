@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iJA774/ija/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/iJA774/ija/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/iJA774/iJA-for-u/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/iJA774/iJA-for-u/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="Python 3.12 | 3.13" src="https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" />
   <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white" />
@@ -60,8 +60,8 @@
 ### 1. 获取代码并安装依赖
 
 ```bash
-git clone https://github.com/iJA774/ija.git
-cd ija
+git clone https://github.com/iJA774/iJA-for-u.git
+cd iJA-for-u
 
 uv sync --frozen --extra dev
 npm --prefix frontend ci
@@ -163,7 +163,7 @@ Embedding、视觉和图片模型都是独立开关与独立凭据。Embedding �
 - 这是单用户本地控制面。若使用反向代理，只公开平台所需的精确回调路径，绝不要把 `/api` 或整个站点直接暴露到公网。
 - AI 输出可能错误；涉及账号操作、群管理、隐私、医疗、法律或财务决策时必须由人复核。
 
-安全问题请使用 GitHub 的 [Private vulnerability reporting](https://github.com/iJA774/ija/security/advisories/new)，不要在公开 Issue 中提交 Token、聊天原文、数据库或用户隐私。
+安全问题请使用 GitHub 的 [Private vulnerability reporting](https://github.com/iJA774/iJA-for-u/security/advisories/new)，不要在公开 Issue 中提交 Token、聊天原文、数据库或用户隐私。
 
 ## 🧪 开发与验证
 
@@ -204,7 +204,7 @@ uv run ija-maintenance restore-smoke D:\ija-backups\snapshot
 
 ## 🤝 参与贡献
 
-欢迎通过 [Issues](https://github.com/iJA774/ija/issues) 报告可复现问题或讨论设计。提交 Pull Request 前，请确保：
+欢迎通过 [Issues](https://github.com/iJA774/iJA-for-u/issues) 报告可复现问题或讨论设计。提交 Pull Request 前，请确保：
 
 1. 行为变化有对应测试，失败路径与权限边界也被覆盖；
 2. 不包含真实凭据、聊天正文、生产数据库、内部审计材料或第三方原始 Prompt；
