@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-core:
+    name: Python 核心（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        python-version:
+          - "3.12"
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+
+      - name: 按锁文件安装项目与开发依赖
+        run: uv sync --frozen --extra dev
+
+      - name: Python 静态检查
+        run: |
+          uv run ruff check src tests plugins
+          uv run pyright
+
+      - name: 从空库执行迁移
+        env:
+          IJA_CI_MIGRATION_DB: ${{ runner.temp }}/ija-migration/ija.sqlite3
+        run: >-
+          uv run python -c "import os, sqlite3;
+          from pathlib import Path;
+          from adapters.persistence.migration import upgrade_database;
+          path = Path(os.environ['IJA_CI_MIGRATION_DB']);
+          upgrade_database(Path.cwd(), path);
+          connection = sqlite3.connect(path);
+          assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok';
+          assert connection.execute('SELECT version_num FROM alembic_version').fetchone() is not None;
+          connection.close()"
+
+      - name: Python 测试
+        run: uv run pytest
+
+  frontend:
+    name: 前端静态检查、测试与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 前端静态检查
+        working-directory: frontend
+        run: |
+          npm run lint
+          npx vue-tsc -b --pretty false
+
+      - name: 前端单元测试
+        working-directory: frontend
+        run: npm run test
+
+      - name: 前端生产构建
+        working-directory: frontend
+        run: npm run build
+
+  playwright:
+    name: Playwright 隔离端到端测试
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+
+      - name: 按锁文件安装 E2E 后端
+        run: uv sync --frozen
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖并构建
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: 安装 Chromium
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: 运行隔离 E2E
+        working-directory: frontend
+        run: npm run e2e
+
+      - name: 上传失败诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
