@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 import subprocess
 import sys
 from io import BytesIO
@@ -14,8 +15,10 @@ def png_bytes(size: tuple[int, int] = (90, 160)) -> bytes:
 
 
 def run_cli(script, cwd, *arguments: str) -> subprocess.CompletedProcess[str]:
-    """从 Skill 目录之外执行 CLI，验证它不依赖项目当前工作目录。"""
+    """从 Skill 目录外以 Windows 默认编码执行，验证 CLI 自行固定 UTF-8。"""
 
+    env = os.environ.copy()
+    env.update({"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"})
     return subprocess.run(
         [sys.executable, str(script), *arguments],
         cwd=cwd,
@@ -23,6 +26,7 @@ def run_cli(script, cwd, *arguments: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 

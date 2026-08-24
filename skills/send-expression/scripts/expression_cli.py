@@ -32,6 +32,15 @@ def _fail(message: str) -> None:
     raise ValueError(message)
 
 
+def _configure_utf8_stdio() -> None:
+    """让独立 CLI 在 Windows 重定向管道中仍使用协议约定的 UTF-8。"""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -254,6 +263,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _configure_utf8_stdio()
     args = _parser().parse_args()
     try:
         if args.command == "inspect":

@@ -710,17 +710,16 @@ class SkillFoundry:
             "skill_name": job["skill_name"],
             **job["request"],
         }
-        env = {
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-        }
+        env: dict[str, str] = {}
         if os.name == "nt":
             # Windows 启动 Python 需要系统目录，但不继承任何业务密钥。
             for name in ("SYSTEMROOT", "WINDIR"):
                 if value := os.environ.get(name):
                     env[name] = value
         completed = subprocess.run(
-            [sys.executable, "-I", str(self.worker_script)],
+            # -I 会忽略所有 PYTHON* 环境变量；UTF-8 必须由解释器参数启用，
+            # 否则 Windows runner 会按 CP1252 编码中文 JSON 并让构建连锁失败。
+            [sys.executable, "-I", "-X", "utf8", str(self.worker_script)],
             input=json.dumps(payload, ensure_ascii=False),
             text=True,
             encoding="utf-8",
@@ -923,17 +922,20 @@ class SkillFoundry:
         }
         if action == "execute":
             payload["input"] = input_value
-        env = {
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUTF8": "1",
-        }
+        env: dict[str, str] = {}
         if os.name == "nt":
             for name in ("SYSTEMROOT", "WINDIR"):
                 if value := os.environ.get(name):
                     env[name] = value
         try:
             completed = subprocess.run(
-                [sys.executable, "-I", str(self.sandbox_script)],
+                [
+                    sys.executable,
+                    "-I",
+                    "-X",
+                    "utf8",
+                    str(self.sandbox_script),
+                ],
                 input=json.dumps(payload, ensure_ascii=False, allow_nan=False),
                 text=True,
                 encoding="utf-8",

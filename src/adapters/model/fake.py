@@ -498,7 +498,14 @@ class FakeModelProvider:
                 ],
                 finish_reason="tool_calls",
             )
-        return ModelResult(content=f"我听到了：{user_text[-120:]}" if user_text else "我在。")
+        visible_user_text = self._visible_user_text(user_text)
+        return ModelResult(
+            content=(
+                f"我听到了：{visible_user_text[-120:]}"
+                if visible_user_text
+                else "我在。"
+            )
+        )
 
     async def stream(self, request: ModelRequest):
         """以确定性单增量模拟流式协议，供本地 UI 与契约测试使用。"""
@@ -530,3 +537,12 @@ class FakeModelProvider:
             return {}
         loaded = json.loads(encoded)
         return loaded if isinstance(loaded, dict) else {}
+
+    @staticmethod
+    def _visible_user_text(text: str) -> str:
+        """移除应用层稳定索引，只回显模型实际可见的用户正文。"""
+
+        marker = "[应用层消息索引，固定首行]"
+        if text.startswith(marker) and "\n" in text:
+            return text.split("\n", maxsplit=1)[1]
+        return text

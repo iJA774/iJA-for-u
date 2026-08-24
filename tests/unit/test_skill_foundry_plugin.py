@@ -610,7 +610,7 @@ def test_worker_builds_only_inside_draft_and_does_not_expand_environment(tmp_pat
     }
     env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "SHOULD_NOT_LEAK": "secret"}
     completed = subprocess.run(
-        [sys.executable, "-I", str(worker)],
+        [sys.executable, "-I", "-X", "utf8", str(worker)],
         input=json.dumps(payload, ensure_ascii=False),
         text=True,
         encoding="utf-8",
@@ -695,6 +695,7 @@ def test_controller_passes_worker_a_minimal_environment(
     captured: dict[str, Any] = {}
 
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["command"] = args[0]
         captured.update(kwargs)
         payload = json.loads(kwargs["input"])
         draft = Path(payload["draft_root"])
@@ -722,7 +723,8 @@ def test_controller_passes_worker_a_minimal_environment(
 
     assert job["state"] == "REVIEW_PENDING"
     assert "OPENAI_API_KEY" not in captured["env"]
-    assert set(captured["env"]) <= {"PYTHONIOENCODING", "PYTHONUTF8", "SYSTEMROOT", "WINDIR"}
+    assert set(captured["env"]) <= {"SYSTEMROOT", "WINDIR"}
+    assert captured["command"][1:4] == ["-I", "-X", "utf8"]
     worker_payload = json.loads(captured["input"])
     assert "project_root" not in worker_payload
     assert "database" not in worker_payload

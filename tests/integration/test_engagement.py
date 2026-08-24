@@ -650,6 +650,9 @@ async def test_drift_only_creates_candidate_and_never_sends(settings) -> None:
     runtime = build_runtime(settings, model_override=FakeModelProvider())
     await runtime.start()
     try:
+        # 本用例验证显式 Drift 调用；后台调度器会与手动调用竞争同一候选池，
+        # 慢速 runner 上可能先聚合父候选，使被测调用合法返回 idle。
+        await runtime.drift_scheduler.stop()
         session = await create_private(runtime, "drift")
         await runtime.store.save_engagement_policy(
             EngagementPolicy(
