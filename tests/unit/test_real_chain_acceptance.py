@@ -226,6 +226,10 @@ async def test_run_acceptance_executes_full_fake_chain_with_real_expression_skil
     assert report["model_attempts"]["attempt_count"] > 0
     assert report["model_attempts"]["success_count"] > 0
     assert report["sticker"]["collected_assets"]
+    assert report["latency"]["sample_count"] == 10
+    assert report["latency"]["p50_ms"] >= 0
+    assert report["latency"]["p95_ms"] >= report["latency"]["p50_ms"]
+    assert report["tool_execution_summary"]["completed"] >= 1
     assert any(
         item["tool_name"] == "send_expression"
         and item["status"] == "completed"

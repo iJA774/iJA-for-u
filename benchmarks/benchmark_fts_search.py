@@ -40,6 +40,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sessions", type=int, default=1_000)
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument(
+        "--message-p95-ms",
+        type=float,
+        default=0,
+        help="消息检索 P95 门槛；0 表示只报告、不设门槛",
+    )
+    parser.add_argument(
+        "--memory-p95-ms",
+        type=float,
+        default=0,
+        help="记忆候选检索 P95 门槛；0 表示只报告、不设门槛",
+    )
+    parser.add_argument(
         "--database",
         type=Path,
         help="保留基准数据库到指定路径；默认使用并清理临时目录",
@@ -49,15 +61,33 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="允许覆盖 --database 指定的既有文件",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="可选 JSON 报告路径；既有文件不会被覆盖",
+    )
     return parser
 
 
-def _validate_args(args: argparse.Namespace) -> None:
+def validate_args(args: argparse.Namespace) -> None:
+    """校验 workload、延迟门槛与显式覆盖边界。"""
+
     for name in ("messages", "memories", "sessions", "iterations"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name} 必须大于 0")
+    for name in ("message_p95_ms", "memory_p95_ms"):
+        if getattr(args, name) < 0:
+            raise ValueError(f"--{name.replace('_', '-')} 不能为负数")
     if args.database is not None and args.database.exists() and not args.overwrite:
         raise FileExistsError("基准数据库已存在；如确认覆盖，请显式传入 --overwrite")
+    if args.output is not None and args.output.exists():
+        raise FileExistsError("--output 已存在，拒绝覆盖")
+    if (
+        args.database is not None
+        and args.output is not None
+        and args.database.resolve() == args.output.resolve()
+    ):
+        raise ValueError("--database 与 --output 必须使用不同路径")
 
 
 def _session_id(index: int) -> str:
@@ -221,7 +251,9 @@ def _measure(
     }
 
 
-def _run(database_path: Path, args: argparse.Namespace) -> dict[str, Any]:
+def run_benchmark(database_path: Path, args: argparse.Namespace) -> dict[str, Any]:
+    """运行 FTS 规模基准，并同时验证命中正确性与 Session 隔离。"""
+
     upgrade_database(PROJECT_ROOT, database_path)
     connection = sqlite3.connect(database_path)
     connection.execute("PRAGMA journal_mode=WAL")
@@ -246,6 +278,8 @@ def _run(database_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     )
     hot_session_id = _session_id(min(777, args.sessions - 1))
     hot_scope_key = f"private:{hot_session_id}"
+    message_target_id = f"message-{max(0, args.messages // 4):09d}"
+    memory_target_id = f"memory-{max(0, args.memories // 4):09d}"
 
     def message_query() -> list[tuple[Any, ...]]:
         return connection.execute(
@@ -278,12 +312,51 @@ def _run(database_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     tracemalloc.start()
     message_result = _measure(message_query, iterations=args.iterations)
     memory_result = _measure(memory_query, iterations=args.iterations)
+    message_ids = [row[0] for row in message_query()]
+    memory_ids = [row[0] for row in memory_query()]
+    if args.sessions > 1:
+        other_session_id = _session_id(0 if hot_session_id != _session_id(0) else 1)
+        other_message_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM message_search_fts
+            WHERE message_search_fts MATCH ? AND session_id = ?
+            """,
+            (f'"{_MESSAGE_NEEDLE}"', other_session_id),
+        ).fetchone()[0]
+        other_memory_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM memory_search_fts
+            WHERE memory_search_fts MATCH ? AND scope_key = ? AND status = 'active'
+            """,
+            (_MEMORY_MATCH, f"private:{other_session_id}"),
+        ).fetchone()[0]
+    else:
+        other_message_count = 0
+        other_memory_count = 0
     _current_bytes, peak_bytes = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     connection.close()
 
+    checks = {
+        "消息 FTS 精确命中目标": message_ids == [message_target_id],
+        "记忆 FTS 精确命中目标": memory_ids == [memory_target_id],
+        "消息 FTS 没有跨 Session 泄漏": other_message_count == 0,
+        "记忆 FTS 没有跨 Scope 泄漏": other_memory_count == 0,
+        "消息 FTS P95 满足门槛": (
+            args.message_p95_ms == 0
+            or message_result["p95_ms"] <= args.message_p95_ms
+        ),
+        "记忆 FTS P95 满足门槛": (
+            args.memory_p95_ms == 0
+            or memory_result["p95_ms"] <= args.memory_p95_ms
+        ),
+    }
     return {
+        "schema_version": 1,
+        "status": "passed" if all(checks.values()) else "failed",
         "shape": {
             "messages": args.messages,
             "memories": args.memories,
@@ -297,23 +370,30 @@ def _run(database_path: Path, args: argparse.Namespace) -> dict[str, Any]:
         "query_python_peak_mib": round(peak_bytes / 1024 / 1024, 3),
         "message_fts": message_result,
         "memory_fts": memory_result,
+        "checks": checks,
     }
 
 
-def main() -> None:
-    args = _parser().parse_args()
-    _validate_args(args)
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    validate_args(args)
     if args.database is not None:
         database_path = args.database.resolve()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         if database_path.exists():
             database_path.unlink()
-        print(json.dumps(_run(database_path, args), ensure_ascii=False, indent=2))
-        return
-    with tempfile.TemporaryDirectory(prefix="ija-fts-benchmark-") as temp_dir:
-        database_path = Path(temp_dir) / "benchmark.sqlite3"
-        print(json.dumps(_run(database_path, args), ensure_ascii=False, indent=2))
+        report = run_benchmark(database_path, args)
+    else:
+        with tempfile.TemporaryDirectory(prefix="ija-fts-benchmark-") as temp_dir:
+            database_path = Path(temp_dir) / "benchmark.sqlite3"
+            report = run_benchmark(database_path, args)
+    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
+    return 0 if report["status"] == "passed" else 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

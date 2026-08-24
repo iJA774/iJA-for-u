@@ -196,6 +196,23 @@ uv run ija-maintenance restore-smoke D:\ija-backups\snapshot
 
 覆盖恢复必须显式追加 `--confirm RESTORE`。
 
+### 性能与真实链路评测
+
+仓库提供三类隔离评测；报告只包含合成数据，不读取或修改日常 `data/`：
+
+```powershell
+# Runtime 并发 soak：权威状态重启摘要、SQLite 一致性、P50/P95
+uv run python benchmarks/benchmark_runtime_soak.py --sessions 16 --rounds 20
+
+# FTS：规模造数、命中/Session 隔离、P50/P95；门槛为 0 时只报告
+uv run python benchmarks/benchmark_fts_search.py --message-p95-ms 50 --memory-p95-ms 50
+
+# 真实模型私聊/群聊/学习/表情 Tool Execution；默认使用内置合成贴纸
+uv run python scripts/real_chain_acceptance.py
+```
+
+Runtime Soak 和 FTS 默认使用临时目录与离线 Provider。真实链路验收会复用本机真实模型配置并产生模型调用费用，但会禁用平台插件、隔离数据库并脱敏报告；仅在明确不验收工具时使用 `--no-sticker`。
+
 ## 🗺️ 当前边界
 
 - 以源码仓库方式运行；当前 wheel 不包含完整的配置、Prompt、Skill、迁移与前端静态资源。

@@ -41,7 +41,7 @@ jobs:
 
       - name: Python 静态检查
         run: |
-          uv run ruff check src tests plugins
+          uv run ruff check src tests plugins benchmarks scripts
           uv run pyright
 
       - name: 从空库执行迁移

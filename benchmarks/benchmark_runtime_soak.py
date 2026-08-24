@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import statistics
@@ -135,6 +136,55 @@ async def _database_checks(runtime: Runtime) -> dict[str, Any]:
     }
 
 
+async def _recovery_snapshot(
+    runtime: Runtime,
+    session_ids: set[str],
+) -> dict[str, Any]:
+    """生成可跨进程比较的权威会话状态摘要，避免只比较总行数。"""
+
+    sessions = [
+        item
+        for item in await runtime.store.list_sessions()
+        if item.id in session_ids
+    ]
+    messages = [
+        item
+        for session_id in sorted(session_ids)
+        for item in await runtime.store.list_messages(session_id)
+    ]
+    decisions = [
+        item
+        for session_id in sorted(session_ids)
+        for item in await runtime.store.list_decisions(session_id)
+    ]
+    payload = {
+        "sessions": [
+            item.model_dump(mode="json")
+            for item in sorted(sessions, key=lambda value: value.id)
+        ],
+        "messages": [
+            item.model_dump(mode="json")
+            for item in sorted(messages, key=lambda value: value.id)
+        ],
+        "decisions": [
+            item.model_dump(mode="json")
+            for item in sorted(decisions, key=lambda value: value.id)
+        ],
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+        "session_count": len(sessions),
+        "message_count": len(messages),
+        "decision_count": len(decisions),
+    }
+
+
 async def run_soak(
     settings: AppSettings,
     *,
@@ -240,6 +290,8 @@ async def run_soak(
                 await runtime.store.list_pending_messages(session.id)
             )
         database = await _database_checks(runtime)
+        session_ids = {session.id for session in sessions}
+        before_restart = await _recovery_snapshot(runtime, session_ids)
         _, peak_bytes = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -259,6 +311,7 @@ async def run_soak(
                 await restarted.store.list_messages(session.id)
             )
         restart_database = await _database_checks(restarted)
+        after_restart = await _recovery_snapshot(restarted, session_ids)
     finally:
         await restarted.stop()
 
@@ -271,6 +324,7 @@ async def run_soak(
         "SQLite 外键检查无违规": database["foreign_key_violation_count"] == 0,
         "重启后 Session 数量一致": len(restored_sessions) == session_count,
         "重启后消息数量一致": restored_messages == message_count,
+        "重启前后权威状态摘要一致": after_restart == before_restart,
         "重启后 SQLite 不变量仍成立": (
             restart_database["integrity_check"] == "ok"
             and restart_database["foreign_key_violation_count"] == 0
@@ -303,6 +357,10 @@ async def run_soak(
         },
         "database": database,
         "restart_database": restart_database,
+        "recovery": {
+            "before_restart": before_restart,
+            "after_restart": after_restart,
+        },
         "checks": checks,
     }
 

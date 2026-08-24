@@ -74,7 +74,7 @@ exclude = [".venv", "frontend", "reference_project", "参考"]
 select = ["E", "F", "I", "B", "UP", "ASYNC"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "benchmarks", "scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."

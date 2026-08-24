@@ -54,4 +54,5 @@ async def test_runtime_soak_smoke_proves_counts_restart_and_foreign_keys(
     assert report["status"] == "passed"
     assert report["workload"]["operations"] == 4
     assert report["observed"]["message_count"] == 8
+    assert report["recovery"]["before_restart"] == report["recovery"]["after_restart"]
     assert all(report["checks"].values())

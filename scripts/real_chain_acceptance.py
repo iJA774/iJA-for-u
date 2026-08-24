@@ -209,6 +209,42 @@ def _assistant_text(messages: Sequence[StoredMessage]) -> str:
     ).strip()
 
 
+def _percentile(values: Sequence[float], fraction: float) -> float:
+    """使用最近秩生成稳定的验收延迟分位数。"""
+
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
+    return round(ordered[index], 2)
+
+
+def _latency_summary(turns: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    values = [float(item["elapsed_ms"]) for item in turns]
+    return {
+        "sample_count": len(values),
+        "p50_ms": _percentile(values, 0.50),
+        "p95_ms": _percentile(values, 0.95),
+        "max_ms": round(max(values, default=0), 2),
+    }
+
+
+def _tool_execution_summary(executions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    completed = [item for item in executions if item.get("status") == "completed"]
+    latencies = [
+        float(item["elapsed_ms"])
+        for item in completed
+        if item.get("elapsed_ms") is not None
+    ]
+    return {
+        "total": len(executions),
+        "completed": len(completed),
+        "failed": sum(item.get("status") == "failed" for item in executions),
+        "latency_p50_ms": _percentile(latencies, 0.50),
+        "latency_p95_ms": _percentile(latencies, 0.95),
+    }
+
+
 async def _send_turn(
     runtime: Runtime,
     *,
@@ -467,6 +503,8 @@ async def run_acceptance(
         "synthetic_data_only": True,
         "sessions": {},
         "tool_executions": [],
+        "tool_execution_summary": {},
+        "latency": {},
         "model_attempts": {},
         "checks": {},
     }
@@ -637,6 +675,16 @@ async def run_acceptance(
         report["tool_executions"] = await _tool_snapshot(
             runtime, {private.id, group.id}
         )
+        all_turns = [
+            *private_turns,
+            *group_turns,
+            private_acceptance,
+            group_acceptance,
+        ]
+        report["latency"] = _latency_summary(all_turns)
+        report["tool_execution_summary"] = _tool_execution_summary(
+            report["tool_executions"]
+        )
         # 只报告 SQL 聚合后的安全事实；attempt 本身不存 Prompt、输出、端点或凭据。
         report["model_attempts"] = (
             await runtime.store.summarize_model_attempts()
@@ -679,6 +727,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- 总耗时：`{report.get('elapsed_ms', 0)} ms`",
         "- 数据边界：仅合成用户、隔离数据库、平台插件全部禁用",
         "- 配置披露：报告不包含 API Key、Token 或 Base URL",
+        f"- 端到端延迟：`{json.dumps(report.get('latency', {}), ensure_ascii=False)}`",
         "",
         "## 验收检查",
         "",
@@ -756,6 +805,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## 工具执行",
             "",
+            f"汇总：`{json.dumps(report.get('tool_execution_summary', {}), ensure_ascii=False)}`",
+            "",
             "```json",
             json.dumps(tools, ensure_ascii=False, indent=2).replace(
                 "```", "\\`\\`\\`"
@@ -799,7 +850,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sticker",
         type=Path,
-        help="可选本地图片；上传到隔离表情库并验收 send_expression",
+        default=PROJECT_ROOT / "scripts" / "assets" / "acceptance-sticker.png",
+        help="本地图片；默认使用内置合成贴纸并强制验收 send_expression",
+    )
+    parser.add_argument(
+        "--no-sticker",
+        action="store_true",
+        help="显式跳过表情收集与 send_expression Tool Execution 验收",
     )
     return parser
 
@@ -824,7 +881,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_settings = load_settings(project_root)
         if source_settings.model.mode != "openai":
             raise ValueError("当前项目没有启用真实模型配置（model.mode 不是 openai）")
-        sticker = args.sticker.resolve() if args.sticker is not None else None
+        sticker = (
+            None
+            if args.no_sticker
+            else args.sticker.resolve() if args.sticker is not None else None
+        )
         if sticker is not None and not sticker.is_file():
             raise ValueError("--sticker 指向的图片不存在或不是文件")
 
