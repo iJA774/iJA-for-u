@@ -102,8 +102,11 @@ test('添加 Feed 后候选经 Proactive 送达并标记来源', async ({ page }
   await expect(candidate.getByText('已发送', { exact: true })).toBeVisible({ timeout: 8_000 })
 
   await page.getByRole('link', { name: '会话模拟' }).click()
-  await expect(page.getByText(/看到一条可能和你有关的内容：E2E 主动候选/)).toBeVisible()
-  await expect(page.getByText('主动触达', { exact: true })).toBeVisible()
+  const message = page.locator('.bubble-row.assistant').filter({
+    hasText: '看到一条可能和你有关的内容：E2E 主动候选',
+  })
+  await expect(message).toBeVisible()
+  await expect(message.getByText('主动触达', { exact: true })).toBeVisible()
 })
 
 test('低价值候选经 Drift 聚合后重新通过 Proactive 送达', async ({ page }) => {
@@ -136,8 +139,11 @@ test('低价值候选经 Drift 聚合后重新通过 Proactive 送达', async ({
   await expect(page.locator('.run-row').filter({ hasText: 'candidate_aggregation' })).toBeVisible()
 
   await page.getByRole('link', { name: '会话模拟' }).click()
-  await expect(page.getByText(/看到一条可能和你有关的内容：近期订阅内容小结/)).toBeVisible()
-  await expect(page.getByText('主动触达', { exact: true })).toBeVisible()
+  const message = page.locator('.bubble-row.assistant').filter({
+    hasText: '看到一条可能和你有关的内容：近期订阅内容小结',
+  })
+  await expect(message).toBeVisible()
+  await expect(message.getByText('主动触达', { exact: true })).toBeVisible()
 })
 
 test('表情首次生成后按名称复用且聊天渲染真实图片', async ({ page }) => {
