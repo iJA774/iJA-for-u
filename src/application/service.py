@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, ValidationError
 
 from adapters.persistence import PersonaStore
+from application.conversation import (
+    ConversationUnderstanding,
+    needs_conversation_understanding,
+    understand_conversation,
+)
 from application.events import EventHub
 from application.expressions import ExpressionService
 from application.memory import MemoryService
@@ -911,6 +916,38 @@ class ChatService:
                         participants=session.participants,
                         now=snapshot_time,
                     )
+                hard_gate = (
+                    not decision.score_detail.get("forced")
+                    and (
+                        decision.score_detail.get("participation_mode") == "silent"
+                        or decision.score_detail.get("reply_cooldown_remaining_seconds", 0) > 0
+                        or decision.score_detail.get("idle_backoff_remaining_seconds", 0) > 0
+                    )
+                )
+                if not hard_gate and needs_conversation_understanding(session, pending, history):
+                    understanding = await understand_conversation(
+                        settings=self.settings, model=self.model, prompting=self.prompting,
+                        session=session, pending=pending, history=history, decision=decision,
+                    )
+                    decision.score_detail["conversation_understanding"] = understanding.model_dump(
+                        mode="json"
+                    )
+                    if session.chat_type == ChatType.GROUP:
+                        decision.score_detail["conversation_message_ids"] = understanding.relevant_message_ids
+                        decision.trigger_message_id = understanding.target_message_id
+                        if not decision.score_detail.get("forced"):
+                            decision.score = max(0, round(
+                                understanding.utility
+                                * float(decision.score_detail["effective_frequency_factor"])
+                            ) - int(decision.score_detail.get("presence_penalty", 0)))
+                            decision.action = (
+                                DecisionAction.REPLY if understanding.target_message_id is not None
+                                and decision.score >= decision.threshold else DecisionAction.SILENCE
+                            )
+                            decision.reason = f"对话参与价值 {decision.score}，阈值 {decision.threshold}"
+                            decision.score_detail["increment_idle_streak"] = (
+                                decision.action == DecisionAction.SILENCE
+                            )
                 if decision.action == DecisionAction.REPLY:
                     reply_plan = self.reply_planner.plan(
                         session=session,
@@ -983,38 +1020,44 @@ class ChatService:
                 pending_by_id[message_id]
                 for message_id in reply_plan.relevant_message_ids
             ]
+            raw_understanding = decision.score_detail.get("conversation_understanding")
+            understanding = (
+                ConversationUnderstanding.model_validate(raw_understanding)
+                if raw_understanding is not None else None
+            )
+            contextual_messages = [
+                item for item in history
+                if understanding is not None and item.id in understanding.history_message_ids
+            ]
+            conversation_messages = contextual_messages + relevant_messages
 
             persona = self.personas.get_for_chat_type(session.chat_type)
             facts = await self.store.list_facts(scope_key_for(session))
             memories = await self.memory.retrieve(
                 session=session,
-                query=self.prompting.project_messages_text(
+                query=(understanding.retrieval_query if understanding and understanding.retrieval_query else
+                       self.prompting.project_messages_text(
                     session,
-                    relevant_messages,
-                ),
+                    conversation_messages,
+                )),
                 context_budget=True,
             )
             summaries = await self.memory.latest_conversation_summaries(session=session)
             messages_for_prompt = history[-self.settings.chat.recent_context_messages :]
-            if not any(
-                item.id == reply_plan.target_message_id
-                for item in messages_for_prompt
-            ):
-                target_message = pending_by_id[reply_plan.target_message_id]
-                retained = [
-                    item
-                    for item in messages_for_prompt[
-                        -(self.settings.chat.recent_context_messages - 1) :
-                    ]
-                    if item.id != target_message.id
-                ]
-                messages_for_prompt = sorted(
-                    [target_message, *retained],
-                    key=lambda item: (item.created_at, item.id),
-                )
+            required_messages = conversation_messages if session.chat_type == ChatType.GROUP else (
+                contextual_messages + pending
+            )
+            required_ids = {item.id for item in required_messages}
+            # 选中的对话可能早于最近历史窗口，不能只保住问题却丢掉其引用证据。
+            remaining = max(0, self.settings.chat.recent_context_messages - len(required_messages))
+            retained = [item for item in messages_for_prompt if item.id not in required_ids]
+            messages_for_prompt = sorted(
+                required_messages + (retained[-remaining:] if remaining else []),
+                key=lambda item: (item.created_at, item.id),
+            )
             learning_context = await self.social_learning.prepare_reply_context(
                 session=session,
-                messages=messages_for_prompt,
+                messages=conversation_messages,
                 turn_id=decision.id,
             )
             channel_runtime = await self._channel_runtime_context(session)
@@ -1048,7 +1091,9 @@ class ChatService:
                 turn_id=decision.id,
                 source_text=self.prompting.project_messages_text(
                     session,
-                    relevant_messages,
+                    # 对话证据可以跨成员，工具授权文本仍只属于本轮行动发起人。
+                    [item for item in relevant_messages
+                     if item.sender_id == reply_plan.address_sender_id],
                 ),
                 character_id=persona.character_id,
                 authorization_scopes=authorization_scopes,
@@ -1113,6 +1158,7 @@ class ChatService:
                 summaries=summaries,
                 reply_plan=reply_plan,
                 learning_context=learning_context,
+                conversation_context=understanding.model_dump(mode="json") if understanding else None,
                 include_images=(
                     self.settings.model.supports_vision
                     and "image_description"
@@ -1122,7 +1168,7 @@ class ChatService:
                         and self.vision.uses_external_model
                     )
                 ),
-                required_message_ids={reply_plan.target_message_id},
+                required_message_ids=required_ids,
                 input_token_budget=(
                     self.settings.model.context_window_tokens
                     - self.settings.model.max_tokens
@@ -1308,6 +1354,7 @@ class ChatService:
                         ),
                         origin=MessageOrigin.REACTIVE,
                         origin_run_id=decision.id,
+                        source_refs=[item.id for item in conversation_messages],
                         created_at=batch_created_at
                         + timedelta(microseconds=index),
                     )

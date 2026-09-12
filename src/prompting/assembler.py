@@ -62,6 +62,7 @@ class PromptCatalog:
         "behavior_scene_analysis": Path("tasks/behavior_scene_analysis.md"),
         "behavior_learning": Path("tasks/behavior_learning.md"),
         "behavior_feedback": Path("tasks/behavior_feedback.md"),
+        "conversation_understanding": Path("tasks/conversation_understanding.md"),
     }
 
     def __init__(self, root: Path) -> None:
@@ -183,6 +184,7 @@ class PromptAssembler:
         summaries: list[MemoryRecord] | None = None,
         reply_plan: ReplyPlan | None = None,
         learning_context: dict[str, object] | None = None,
+        conversation_context: dict[str, object] | None = None,
         include_images: bool = False,
         required_message_ids: set[str] | None = None,
         input_token_budget: int | None = None,
@@ -217,6 +219,7 @@ class PromptAssembler:
             )
         sections.append(("本轮真实能力", self._capabilities(available_tools)))
         sections.append(("可用 Skills", skills_summary))
+        fixed_sections = list(sections)
         if learning_context:
             sections.append(
                 (
@@ -231,21 +234,39 @@ class PromptAssembler:
                     ),
                 )
             )
-        sections.append(
-            (
-                "本轮上下文数据",
-                self._untrusted_data(
-                    {
+        context_payload: dict[str, object] = {
                         "request_time": request_time,
                         "timezone": timezone,
                         "session": self._session_payload(session),
                         "profile_facts": self._fact_payload(facts, memories or []),
                         "conversation_summaries": self._memory_payload(summaries or []),
                         "long_term_memories": self._memory_payload(memories or []),
-                    }
-                ),
-            )
-        )
+                        "conversation_understanding": conversation_context,
+        }
+        sections.append(("本轮上下文数据", self._untrusted_data(context_payload)))
+        if input_token_budget is not None:
+            current_cost = estimate_messages_tokens([
+                ModelMessage(role="user", content=self._chat_message_content(
+                    item, session.chat_type, channel_runtime=channel_runtime,
+                )) for item in messages if item.id in (required_message_ids or set())
+            ])
+            # 先让可重建的画像/记忆/表达退让，完整当前请求优先于派生参考。
+            # 固定身份与规则不裁剪；当前输入本身过长才交给历史预算器分配。
+            optional_keys = ["conversation_summaries", "profile_facts", "long_term_memories"]
+            learning_removed = not learning_context
+            while estimate_messages_tokens([
+                ModelMessage(role="system", content=self._join_sections(*sections))
+            ]) + current_cost > input_token_budget:
+                if not learning_removed:
+                    sections = [*fixed_sections, sections[-1]]
+                    learning_removed = True
+                    continue
+                key = next((key for key in optional_keys if context_payload[key]), None)
+                if key is None:
+                    break
+                values = cast(list[object], context_payload[key])
+                values.pop()
+                sections[-1] = ("本轮上下文数据", self._untrusted_data(context_payload))
         system = self._join_sections(*sections)
         if input_token_budget is not None and estimate_messages_tokens(
             [ModelMessage(role="system", content=system)]
@@ -377,6 +398,34 @@ class PromptAssembler:
         return " ".join(
             part.strip() for part in parts if part.strip()
         ).strip() or "[无可投影消息内容]"
+
+    def build_conversation_understanding(
+        self, *, session: SessionView, pending: list[StoredMessage],
+        history: list[StoredMessage], proposed: dict[str, object], forced_target: str | None,
+    ) -> list[ModelMessage]:
+        """让语义分析与回复生成使用同一消息投影和会话可见域。"""
+        return [
+            ModelMessage(role="system", content=self.catalog.get("conversation_understanding")),
+            ModelMessage(role="user", content=self._untrusted_data({
+                "chat_type": session.chat_type.value,
+                "pending": self._message_payload(pending, session=session),
+                "history": self._message_payload(history, session=session),
+                "message_links": [
+                    {
+                        "message_id": item.id,
+                        "quoted_message_ids": [
+                            component.message_id for component in item.components
+                            if component.type == ComponentType.QUOTE and component.message_id
+                        ],
+                        "mentioned_user_ids": [
+                            component.target_id for component in item.components
+                            if component.type == ComponentType.MENTION and component.target_id
+                        ],
+                    } for item in [*history, *pending]
+                ],
+                "proposed": proposed, "forced_target": forced_target,
+            })),
+        ]
 
     def build_jargon_learning(
         self, *, session: SessionView, messages: list[StoredMessage]

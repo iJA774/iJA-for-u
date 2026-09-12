@@ -85,9 +85,21 @@ def _trim_with_required_messages(
     selected: dict[int, ModelMessage] = {}
     used = 0
     ordered_required = sorted(required_indices)
+    costs = [estimate_messages_tokens([messages[index]]) for index in ordered_required]
+    allocations = [min(cost, minimum_per_required) for cost in costs]
+    available = budget - sum(allocations)
+    # 先满足短消息，再均分长消息的剩余预算，避免第一条长输入吞掉后续条件。
+    while available > 0:
+        unfinished = [i for i, cost in enumerate(costs) if allocations[i] < cost]
+        if not unfinished:
+            break
+        share = max(1, available // len(unfinished))
+        for i in unfinished:
+            grant = min(share, costs[i] - allocations[i], available)
+            allocations[i] += grant
+            available -= grant
     for position, index in enumerate(ordered_required):
-        remaining_required = len(ordered_required) - position - 1
-        allocation = budget - used - minimum_per_required * remaining_required
+        allocation = allocations[position]
         message = messages[index]
         cost = estimate_messages_tokens([message])
         if cost > allocation:

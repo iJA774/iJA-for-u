@@ -35,6 +35,7 @@ from domain.models import (
     BehaviorTagGroup,
     BehaviorTagKind,
     ChatType,
+    ComponentType,
     ExtractionStatus,
     GroupExpressionPattern,
     JargonTerm,
@@ -212,12 +213,16 @@ class BehaviorFeedbackCandidate(BaseModel):
     """模型对一次行为选择的有证据评价。"""
 
     selection_id: str
+    response_to_message_id: str
+    attribution: Literal["behavior", "content", "uncertain"]
+    signal: Literal["direct", "continuation"]
     adopted: bool
     status: Literal["success", "partial_success", "failed"]
     score_delta: float = Field(default=0.0, allow_inf_nan=False)
     outcome: str = Field(min_length=1, max_length=500)
     reason: str = Field(min_length=1, max_length=500)
     source_message_ids: list[str] = Field(min_length=1, max_length=20)
+
 
     @model_validator(mode="after")
     def validate_reward_range(self) -> BehaviorFeedbackCandidate:
@@ -232,6 +237,10 @@ class BehaviorFeedbackCandidate(BaseModel):
         else:
             raw = self.score_delta if self.score_delta < 0 else -0.6
             self.score_delta = -max(0.1, min(1.0, abs(raw)))
+        if not self.adopted or self.attribution != "behavior":
+            self.score_delta = 0
+        elif self.signal == "continuation":
+            self.score_delta = max(-0.1, min(0.1, self.score_delta))
         return self
 
 
@@ -618,7 +627,8 @@ class SocialLearningService:
         if not self.settings.social_learning.enabled or not messages:
             return {}
         await self.run_maintenance()
-        query_messages = messages[-8:]
+        # 调用方已经选定本轮对话；再次截取最近八条会丢失前面的指代对象。
+        query_messages = messages
         query_text = self.prompting.project_messages_text(
             session,
             query_messages,
@@ -1368,6 +1378,9 @@ class SocialLearningService:
             eligible = []
             timeline_ids: set[str] = set()
             references: list[dict[str, object]] = []
+            evidence_by_selection: dict[str, set[str]] = {}
+            replies_by_selection: dict[str, set[str]] = {}
+            users_by_selection: dict[str, set[str]] = {}
             for selection in selections:
                 assistant_messages = [
                     by_id[message_id]
@@ -1379,11 +1392,21 @@ class SocialLearningService:
                 selected_after = max(
                     item.created_at for item in assistant_messages
                 )
+                next_reply_at = min((
+                    item.created_at for item in history
+                    if item.role == MessageRole.ASSISTANT and item.created_at > selected_after
+                ), default=selected_after + timedelta(minutes=30))
+                reply_ids = set(selection.assistant_message_ids)
                 followups = [
                     item
                     for item in history
                     if item.role == MessageRole.USER
-                    and item.created_at > selected_after
+                    and selected_after < item.created_at < next_reply_at
+                    and not any(
+                        component.type == ComponentType.QUOTE
+                        and component.message_id not in reply_ids
+                        for component in item.components
+                    )
                 ][:8]
                 if not followups:
                     continue
@@ -1395,6 +1418,17 @@ class SocialLearningService:
                 eligible.append(selection)
                 timeline_ids.update(selection.assistant_message_ids)
                 timeline_ids.update(item.id for item in followups)
+                user_ids = {item.id for item in followups}
+                evidence_by_selection[selection.id] = reply_ids | user_ids
+                replies_by_selection[selection.id] = reply_ids
+                users_by_selection[selection.id] = user_ids
+                source_messages: list[StoredMessage] = []
+                for source_id in dict.fromkeys(
+                    source_id for item in assistant_messages for source_id in item.source_refs
+                ):
+                    source = await self.store.get_recallable_message(session.id, source_id)
+                    if source is not None:
+                        source_messages.append(source)
                 references.append(
                     {
                         "selection_id": selection.id,
@@ -1402,6 +1436,11 @@ class SocialLearningService:
                         "scene": selection.scene_summary,
                         "action": pattern.action,
                         "expected_outcome": pattern.expected_outcome,
+                        "assistant_message_ids": selection.assistant_message_ids,
+                        "followup_message_ids": [item.id for item in followups],
+                        "conversation_context": self.prompting.project_messages_text(
+                            session, source_messages
+                        ),
                     }
                 )
             if not eligible:
@@ -1421,18 +1460,24 @@ class SocialLearningService:
                     BehaviorFeedbackPayload,
                 )
             allowed_selection_ids = {item.id for item in eligible}
-            allowed_message_ids = {item.id for item in timeline}
             received_ids: set[str] = set()
             for feedback in payload.feedback:
                 if feedback.selection_id not in allowed_selection_ids:
                     raise InvalidModelResponseError(
                         "行为反馈引用了输入范围外的选择"
                     )
-                if not set(feedback.source_message_ids).issubset(
-                    allowed_message_ids
+                evidence = set(feedback.source_message_ids)
+                if (
+                    feedback.selection_id in received_ids
+                    or feedback.response_to_message_id not in replies_by_selection[feedback.selection_id]
+                    or not evidence.issubset(evidence_by_selection[feedback.selection_id])
+                    or not evidence.intersection(users_by_selection[feedback.selection_id])
+                    or (feedback.adopted and not evidence.intersection(
+                        replies_by_selection[feedback.selection_id]
+                    ))
                 ):
                     raise InvalidModelResponseError(
-                        "行为反馈引用了输入范围外的消息"
+                        "行为反馈必须引用该选择对应的回复及同一反馈窗口中的用户证据"
                     )
                 received_ids.add(feedback.selection_id)
                 await self.store.save_behavior_feedback(

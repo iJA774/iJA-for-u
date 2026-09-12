@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from typing import Any
 
 from domain.models import ComponentType, MessageRole, Participant, StoredMessage, utc_now
 
@@ -32,7 +33,7 @@ WHITESPACE_RE = re.compile(r"\s+")
 @dataclass(frozen=True, slots=True)
 class ReplyScore:
     score: int
-    detail: dict[str, int | float | str | bool]
+    detail: dict[str, Any]
     forced: bool
     trigger_message_id: str | None
 
@@ -139,6 +140,93 @@ def score_group_reply(
     participants: list[Participant] | None = None,
     now: datetime | None = None,
 ) -> ReplyScore:
+    """先按引用与连续发言形成候选，再冻结最高必要性的对话和目标。"""
+
+    if not pending:
+        return ReplyScore(0, {"reason": "没有待处理消息"}, False, None)
+    groups: list[list[StoredMessage]] = []
+    owners: dict[str, list[StoredMessage]] = {}
+    for index, message in enumerate(pending):
+        linked = [
+            owners[item.message_id]
+            for item in message.components
+            if item.type == ComponentType.QUOTE and item.message_id in owners
+        ]
+        if linked:
+            group = linked[0]
+            for other in linked[1:]:
+                if other is not group and any(item is other for item in groups):
+                    group.extend(other)
+                    groups.remove(other)
+                    for item in other:
+                        owners[item.id] = group
+        elif (
+            index > 0
+            and pending[index - 1].sender_id == message.sender_id
+            and 0 <= (message.created_at - pending[index - 1].created_at).total_seconds() <= 120
+            and not _is_short_reaction(_semantic_texts([message]))
+            and not _is_short_reaction(_semantic_texts([pending[index - 1]]))
+            and not any(item.type in {ComponentType.MENTION, ComponentType.QUOTE}
+                        for item in message.components)
+        ):
+            # 连续拆句属于一个输入；短反应单独保留，避免接管问题的回复目标。
+            group = owners[pending[index - 1].id]
+        else:
+            group = []
+            groups.append(group)
+        group.append(message)
+        owners[message.id] = group
+
+    positions = {message.id: index for index, message in enumerate(pending)}
+    pending_ids = set(positions)
+    prior = [item for item in recent_history if item.id not in pending_ids]
+    scores: list[ReplyScore] = []
+    for group in groups:
+        group.sort(key=lambda item: positions[item.id])
+        result = _score_conversation(
+            group, recent_history, agent_id=agent_id, trigger_count=trigger_count,
+            frequency_factor=frequency_factor, participants=participants, now=now,
+            prior_history=prior,
+        )
+        target = next(item for item in group if item.id == result.trigger_message_id)
+        if not result.forced:
+            target = max(group, key=lambda item: (
+                _target_priority(item), positions[item.id]
+            ))
+        result = replace(result, trigger_message_id=target.id)
+        result.detail.update({
+            "conversation_message_ids": [item.id for item in group],
+            "candidate_count": len(groups),
+            "batch_pending_count": len(pending),
+        })
+        scores.append(result)
+    return max(scores, key=lambda item: (
+        item.forced, item.score, positions[item.trigger_message_id or ""]
+    ))
+
+
+def _target_priority(message: StoredMessage) -> int:
+    texts = _semantic_texts([message])
+    if not texts or _is_short_reaction(texts):
+        return 0
+    text = "\n".join(texts)
+    return 2 if (
+        _has_question(text)
+        or any(term in text for term in (*REQUEST_TERMS, *OPINION_TERMS))
+    ) else 1
+
+
+def _score_conversation(
+    pending: list[StoredMessage],
+    recent_history: list[StoredMessage],
+    *,
+    agent_id: str,
+    trigger_count: int,
+    frequency_factor: float,
+    prior_history: list[StoredMessage],
+    participants: list[Participant] | None = None,
+    now: datetime | None = None,
+) -> ReplyScore:
     """按相关性、内容、积压和最近存在感计算可解释分数。"""
 
     if not pending:
@@ -212,10 +300,16 @@ def score_group_reply(
         content_score -= 25
         reasons.append("短反应")
 
-    pending_ids = {message.id for message in pending}
-    prior_history = [message for message in recent_history if message.id not in pending_ids]
     continuity_score = 0
-    if prior_history and prior_history[-1].role == MessageRole.ASSISTANT:
+    if (
+        prior_history
+        and prior_history[-1].role == MessageRole.ASSISTANT
+        and _has_question(prior_history[-1].plain_text)
+        and 0 <= (pending[0].created_at - prior_history[-1].created_at).total_seconds() <= 120
+        and re.match(r"^(第[一二三四五六七八九十\d]+个|这个|那个|前者|后者|都可以|都不|是的|不是)", combined)
+        and not any(_mentions_other_member(item, agent_id) for item in pending)
+        and not any(_quotes_other_member(item, agent_id) for item in pending)
+    ):
         continuity_score = 20
         reasons.append("承接 Agent 上轮")
     human_thread_penalty = 0

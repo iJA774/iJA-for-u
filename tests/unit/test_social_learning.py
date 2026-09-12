@@ -185,6 +185,9 @@ def test_expression_selector_prefers_diversity_after_relevance() -> None:
 def test_behavior_feedback_score_is_normalized_by_status() -> None:
     feedback = BehaviorFeedbackCandidate(
         selection_id="selection-1",
+        response_to_message_id="message-1",
+        attribution="behavior",
+        signal="direct",
         adopted=True,
         status="success",
         score_delta=-99,
@@ -194,6 +197,22 @@ def test_behavior_feedback_score_is_normalized_by_status() -> None:
     )
 
     assert feedback.score_delta == 0.6
+
+
+def test_content_praise_does_not_reward_expression_behavior() -> None:
+    """答案有用与话术有效分别归因。"""
+    feedback = BehaviorFeedbackCandidate(
+        selection_id="s", response_to_message_id="a", adopted=True, attribution="content",
+        signal="direct", status="success", score_delta=0.9,
+        outcome="答案正确", reason="只能证明内容有帮助", source_message_ids=["a", "u"],
+    )
+    assert feedback.score_delta == 0
+    continuation = BehaviorFeedbackCandidate(
+        selection_id="s", response_to_message_id="a", adopted=True, attribution="behavior",
+        signal="continuation", status="success", score_delta=0.9,
+        outcome="继续同话题", reason="没有明确评价", source_message_ids=["a", "u"],
+    )
+    assert continuation.score_delta == 0.1
 
 
 def test_cosine_kmeans_is_deterministic_and_keeps_every_cluster_non_empty() -> None:

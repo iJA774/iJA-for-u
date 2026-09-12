@@ -260,6 +260,30 @@ def test_chat_prompt_keeps_latest_history_within_token_budget(settings) -> None:
     assert "最新问题" in (prompt[-1].content or "")
 
 
+def test_current_request_displaces_large_learning_reference(settings) -> None:
+    """派生风格不能挤掉用户拆成两条发来的必要条件。"""
+    assembler = PromptAssembler(settings.project_root / "prompts")
+    current = [StoredMessage(
+        id=f"p{i}", session_id="priority", role=MessageRole.USER, sender_id="u1", sender_name="用户",
+        components=[MessageComponent.text_component(text)], created_at=utc_now(),
+    ) for i, text in enumerate(["请按这个方案修改", "但必须保留现有数据，而且周五前完成"])]
+    base = assembler.build_chat(
+        messages=current, session=session(ChatType.PRIVATE, "priority"), persona=persona(), facts=[],
+        available_tools=set(), skills_summary="无", request_time="2026-09-11", timezone="Asia/Shanghai",
+    )
+    budget = estimate_messages_tokens(base) + 20
+    prompt = assembler.build_chat(
+        messages=current, required_message_ids={item.id for item in current}, input_token_budget=budget,
+        learning_context={"private_expression_guidance": [{"style": "冗余风格" * 2000}]},
+        session=session(ChatType.PRIVATE, "priority"), persona=persona(), facts=[],
+        available_tools=set(), skills_summary="无", request_time="2026-09-11", timezone="Asia/Shanghai",
+    )
+    assert estimate_messages_tokens(prompt) <= budget
+    assert "冗余风格" not in (prompt[0].content or "")
+    assert current[0].plain_text in (prompt[1].content or "")
+    assert current[1].plain_text in (prompt[2].content or "")
+
+
 def test_chat_prompt_always_keeps_required_current_message(settings) -> None:
     assembler = PromptAssembler(settings.project_root / "prompts")
     base = assembler.build_chat(

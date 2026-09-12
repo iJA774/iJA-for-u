@@ -18,6 +18,7 @@ from domain.models import (
     StoredMessage,
     TurnDecision,
 )
+from strategies import GroupChatStrategy
 
 
 def _message(message_id: str, text: str) -> StoredMessage:
@@ -52,6 +53,12 @@ def test_reply_planner_routes_history_evidence_before_reply() -> None:
         score=100,
         threshold=0,
         reason="私聊",
+        score_detail={"conversation_understanding": {
+            "target_message_id": "m1", "relevant_message_ids": ["m1"],
+            "history_message_ids": [], "retrieval_query": "查找上次原话", "utility": 100,
+            "needs_history": True, "needs_fresh_data": False, "missing_information": ["上次原话"],
+            "ambiguous": False, "is_question": True,
+        }},
     )
     plan = ReplyPlanner().plan(
         session=session,
@@ -224,3 +231,38 @@ def test_replyer_draft_must_obey_frozen_output_budget() -> None:
     )
     with pytest.raises(InvalidModelResponseError, match="超过计划上限"):
         validate_reply_draft(too_many, plan)
+
+
+def test_conversation_plan_restores_cross_member_evidence_and_rejects_drift() -> None:
+    """引用链的跨成员证据可重放，其他候选不能混入冻结计划。"""
+    now = datetime.now(UTC)
+    session = SessionView(
+        id="session-plan", platform="web-simulator", account_id="ija-local",
+        external_chat_id="conversation", chat_type=ChatType.GROUP,
+        display_name="对话候选", participants=[], created_at=now, updated_at=now,
+    )
+    source = _message("source", "方案需要同时满足两个限制")
+    question = _message("question", "你觉得怎么解决？").model_copy(update={
+        "sender_id": "u2",
+        "components": [
+            MessageComponent(type=ComponentType.QUOTE, message_id="source", target_id="u1"),
+            MessageComponent(type=ComponentType.MENTION, target_id="agent"),
+            MessageComponent.text_component("你觉得怎么解决？"),
+        ],
+    })
+    unrelated = _message("unrelated", "我去吃饭").model_copy(update={"sender_id": "u3"})
+    pending = [source, question, unrelated]
+    decision = GroupChatStrategy(threshold=80, trigger_count=3, frequency_factor=0.9).decide(
+        session.id, pending, [], now=now,
+    )
+    planner = ReplyPlanner()
+    plan = planner.plan(session=session, decision=decision, pending=pending)
+    assert plan.address_sender_id == "u2"
+    assert plan.relevant_message_ids == ("source", "question")
+    assert planner.restore(
+        payload=plan.model_dump(mode="json"), session=session, decision=decision, pending=pending
+    ) == plan
+    damaged = plan.model_dump(mode="json")
+    damaged["relevant_message_ids"].append("unrelated")
+    with pytest.raises(InputValidationError, match="偏离冻结"):
+        planner.restore(payload=damaged, session=session, decision=decision, pending=pending)

@@ -101,6 +101,7 @@ class ReplyEvidenceMode(StrEnum):
     """本轮回答对历史和实时证据的依赖。"""
 
     CONVERSATION_ONLY = "conversation_only"
+    ADAPTIVE = "adaptive"
     HISTORY_SOURCE_REQUIRED = "history_source_required"
     FRESH_TOOL_REQUIRED = "fresh_tool_required"
     HISTORY_AND_FRESH_TOOL_REQUIRED = "history_and_fresh_tool_required"

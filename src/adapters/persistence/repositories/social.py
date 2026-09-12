@@ -1562,7 +1562,7 @@ class SocialLearningRepositoryMixin(RepositoryMixinSupport):
             behavior = await db.get(BehaviorPatternRow, row.behavior_id)
             if behavior is None:
                 raise NotFoundError("行为选择对应的行为条目不存在")
-            if adopted:
+            if adopted and bounded_score_delta != 0:
                 if feedback_status == "success":
                     behavior.success_count += 1
                 elif feedback_status == "failed":

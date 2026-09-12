@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from pydantic import ValidationError
 
+from application.conversation import ConversationUnderstanding
 from domain.errors import InputValidationError
 from domain.models import (
     ChatType,
@@ -35,10 +36,6 @@ class ReplyPlanner:
             "evidence_policy",
         }
     )
-    _HISTORY_SIGNAL = re.compile(r"(之前|上次|曾经|原话|聊天记录|你还记得)")
-    _FRESH_SIGNAL = re.compile(r"(现在|目前|今天|天气|气温|温度|几点|最新)")
-    _TIME_SIGNAL = re.compile(r"(几点|时间|日期|星期|今天几号)")
-    _WEATHER_SIGNAL = re.compile(r"(天气|气温|温度|下雨|下雪|冷不冷|热不热)")
     _REQUEST_SIGNAL = re.compile(r"(帮我|帮忙|能不能|可以吗|要不要|你觉得|你认为|咋看|怎么看)")
 
     def plan(
@@ -56,24 +53,25 @@ class ReplyPlanner:
             session=session,
             target=target,
             pending=pending,
+            decision=decision,
         )
         relevant_text = "\n".join(item.plain_text for item in relevant if item.plain_text)
-        target_text = target.plain_text.strip()
-        needs_history = bool(self._HISTORY_SIGNAL.search(relevant_text))
-        needs_fresh_data = bool(self._FRESH_SIGNAL.search(relevant_text))
+        raw_understanding = decision.score_detail.get("conversation_understanding")
+        understanding = (
+            ConversationUnderstanding.model_validate(raw_understanding)
+            if raw_understanding is not None else None
+        )
+        needs_history = understanding.needs_history if understanding else False
+        needs_fresh_data = understanding.needs_fresh_data if understanding else False
         evidence_mode = self._evidence_mode(
             needs_history=needs_history,
             needs_fresh_data=needs_fresh_data,
-        )
+        ) if understanding else ReplyEvidenceMode.ADAPTIVE
         preferred_tools: list[str] = []
         if needs_history:
             preferred_tools.extend(["search_messages", "fetch_source"])
-        if self._TIME_SIGNAL.search(relevant_text):
-            preferred_tools.append("get_current_time")
-        if self._WEATHER_SIGNAL.search(relevant_text):
-            preferred_tools.append("get_weather")
 
-        is_question = self._is_question(relevant_text)
+        is_question = understanding.is_question if understanding else self._is_question(relevant_text)
         response_mode = (
             ReplyMode.DIRECT_ANSWER if is_question else ReplyMode.ACKNOWLEDGE_AND_CONTINUE
         )
@@ -98,7 +96,7 @@ class ReplyPlanner:
             evidence_mode=evidence_mode,
             evidence_policy=self._evidence_policy(evidence_mode),
             preferred_tools=tuple(dict.fromkeys(preferred_tools)),
-            ask_follow_up=not is_question and 0 < len(target_text) < 8,
+            ask_follow_up=understanding.ambiguous if understanding else False,
             max_visible_messages=2 if session.chat_type == ChatType.GROUP else 6,
             max_total_chars=1600 if session.chat_type == ChatType.GROUP else 12_000,
         )
@@ -176,14 +174,26 @@ class ReplyPlanner:
         session: SessionView,
         target: StoredMessage,
         pending: list[StoredMessage],
+        decision: TurnDecision,
     ) -> list[StoredMessage]:
-        """私聊保留整批输入；群聊只把目标发送者的消息列为计划证据。"""
+        """群聊沿用策略冻结的对话；旧 Turn 沿用原有发送者快照语义。"""
 
-        candidates = (
-            pending
-            if session.chat_type == ChatType.PRIVATE
-            else [item for item in pending if item.sender_id == target.sender_id]
-        )
+        conversation_ids = decision.score_detail.get("conversation_message_ids")
+        if session.chat_type == ChatType.GROUP and conversation_ids is not None:
+            if (
+                not isinstance(conversation_ids, list)
+                or not all(isinstance(item, str) for item in conversation_ids)
+                or target.id not in conversation_ids
+                or not set(conversation_ids).issubset({item.id for item in pending})
+            ):
+                raise InputValidationError("群聊对话候选与 Turn 快照不一致")
+            candidates = [item for item in pending if item.id in conversation_ids]
+        else:
+            candidates = (
+                pending
+                if session.chat_type == ChatType.PRIVATE
+                else [item for item in pending if item.sender_id == target.sender_id]
+            )
         if len(candidates) <= 20:
             return candidates
         latest = candidates[-19:]
@@ -240,6 +250,12 @@ class ReplyPlanner:
     @staticmethod
     def _evidence_policy(mode: ReplyEvidenceMode) -> str:
         policies = {
+            ReplyEvidenceMode.ADAPTIVE: (
+                "先判断回答真正缺少哪项事实。当前对话能回答就直接回应；"
+                "只有缺失的历史证据才搜索并精确回源，只有外部当前状态才用实时工具核验。"
+                "情绪分享和已给出上下文的延续不因出现日期、之前等词而查询。"
+                "指代存在多个可能对象时先澄清；没有核验能力时明确说明。"
+            ),
             ReplyEvidenceMode.CONVERSATION_ONLY: (
                 "只使用冻结消息快照、当前画像和已召回记忆；不确定时明确说明。"
             ),
@@ -280,8 +296,17 @@ class ReplyPlanner:
             raise InputValidationError("ReplyPlan 回复对象与目标消息发送者不一致")
         if any(message_id not in messages_by_id for message_id in plan.relevant_message_ids):
             raise InputValidationError("ReplyPlan 相关消息越出原 Turn 快照")
-        if session.chat_type == ChatType.GROUP and any(
-            messages_by_id[message_id].sender_id != plan.address_sender_id
-            for message_id in plan.relevant_message_ids
-        ):
-            raise InputValidationError("群聊 ReplyPlan 混入了其他成员的消息")
+        if session.chat_type == ChatType.GROUP:
+            conversation_ids = decision.score_detail.get("conversation_message_ids")
+            if conversation_ids is not None:
+                expected = ReplyPlanner._select_relevant_messages(
+                    session=session, target=target, pending=pending, decision=decision
+                )
+                if plan.relevant_message_ids != tuple(item.id for item in expected):
+                    raise InputValidationError("群聊 ReplyPlan 偏离冻结的对话候选")
+            elif any(
+                messages_by_id[message_id].sender_id != plan.address_sender_id
+                for message_id in plan.relevant_message_ids
+            ):
+                # 已持久化的旧 v2 计划仍可能被人工重试，保留其原始证据边界。
+                raise InputValidationError("群聊 ReplyPlan 混入了其他成员的消息")

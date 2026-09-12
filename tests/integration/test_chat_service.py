@@ -1,5 +1,7 @@
 import asyncio
+import json
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -45,7 +47,7 @@ class PausedModelProvider:
 
     async def complete(self, request: ModelRequest) -> ModelResult:
         if request.json_mode:
-            return ModelResult(content='{"facts": []}')
+            return await FakeModelProvider().complete(request)
         self.chat_requests.append(request)
         if len(self.chat_requests) == 1:
             self.started.set()
@@ -482,10 +484,13 @@ async def test_private_and_group_turns_use_their_assigned_personas(settings) -> 
 
 
 @pytest.mark.asyncio
-async def test_group_planner_keeps_earlier_mention_target_after_other_member_message(
-    settings,
+@pytest.mark.parametrize("forced", [False, True])
+async def test_group_planner_keeps_earlier_target_after_other_member_message(
+    settings, monkeypatch, forced,
 ) -> None:
     service, store, model = await build_service(settings)
+    recall = AsyncMock(return_value=[])
+    monkeypatch.setattr(service.memory, "retrieve", recall)
     channel = CapturingChannel()
     service.channel = channel
     session = await service.create_session(
@@ -497,6 +502,10 @@ async def test_group_planner_keeps_earlier_mention_target_after_other_member_mes
             Participant(external_user_id="u2", display_name="小红"),
         ],
     )
+    await service.update_group_participation_policy(
+        session.id, mode=GroupParticipationMode.NORMAL, trigger_count=1,
+        frequency_factor=1, cooldown_seconds=60, expected_revision=1,
+    )
     direct_result = await service.ingest(
         InboundMessage(
             platform=session.platform,
@@ -507,12 +516,14 @@ async def test_group_planner_keeps_earlier_mention_target_after_other_member_mes
             sender_name="小明",
             chat_type=ChatType.GROUP,
             components=[
-                MessageComponent(
-                    type=ComponentType.MENTION,
-                    target_id="agent",
-                    target_name="小佳",
-                ),
-                MessageComponent.text_component("你怎么看？"),
+                *([
+                    MessageComponent(
+                        type=ComponentType.MENTION,
+                        target_id="agent",
+                        target_name="小佳",
+                    ),
+                ] if forced else []),
+                MessageComponent.text_component("你觉得这个方案为什么失败？能不能帮我看看"),
             ],
         ),
         schedule_turn=False,
@@ -539,6 +550,10 @@ async def test_group_planner_keeps_earlier_mention_target_after_other_member_mes
     assert plan["target_message_id"] == direct_result.message.id
     assert plan["address_sender_id"] == "u1"
     assert plan["relevant_message_ids"] == [direct_result.message.id]
+    assert decision.score_detail["conversation_message_ids"] == [direct_result.message.id]
+    query = recall.call_args.kwargs["query"]
+    assert "方案为什么失败" in query
+    assert "我先去吃饭" not in query
     assert channel.messages[0].reply_to_message_id == direct_result.message.id
     chat_request = next(request for request in model.requests if not request.json_mode)
     system_prompt = chat_request.messages[0].content or ""
@@ -556,6 +571,106 @@ async def test_group_planner_keeps_earlier_mention_target_after_other_member_mes
     assert '"sender_id":"u1"' in (target_prompt_message.content or "")
     await service.stop()
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_semantic_conversation_drives_target_memory_and_learning(settings, monkeypatch) -> None:
+    """无引用的跨成员话题使用同一语义结果驱动目标、召回和学习。"""
+    service, store, model = await build_service(settings)
+    recall = AsyncMock(return_value=[])
+    learning = AsyncMock(return_value={})
+    monkeypatch.setattr(service.memory, "retrieve", recall)
+    monkeypatch.setattr(service.social_learning, "prepare_reply_context", learning)
+    original_complete = model.complete
+
+    async def semantic_complete(request):
+        if "# 本轮对话理解任务" in (request.messages[0].content or ""):
+            data = model._last_untrusted_payload(request)
+            first, question, _noise = data["pending"]
+            return ModelResult(content=json.dumps({
+                "target_message_id": question["message_id"],
+                "relevant_message_ids": [first["message_id"], question["message_id"]],
+                "history_message_ids": [], "retrieval_query": "离线记账工具的延迟同步方案",
+                "utility": 100, "needs_history": False, "needs_fresh_data": False,
+                "missing_information": [], "ambiguous": False, "is_question": True,
+            }))
+        return await original_complete(request)
+
+    monkeypatch.setattr(model, "complete", semantic_complete)
+    channel = CapturingChannel()
+    service.channel = channel
+    session = await service.create_session(
+        chat_type=ChatType.GROUP, display_name="语义话题", external_chat_id="semantic",
+        participants=[Participant(external_user_id=f"u{i}", display_name=f"成员{i}") for i in range(3)],
+    )
+    try:
+        ids = []
+        for index, text in enumerate([
+            "我在做一个离线记账工具", "没有网络能不能先记，连上后再同步？", "我去打球了",
+        ]):
+            result = await service.ingest(InboundMessage(
+                platform=session.platform, account_id=session.account_id,
+                external_message_id=f"semantic-{index}", external_chat_id=session.external_chat_id,
+                sender_id=f"u{index}", sender_name=f"成员{index}", chat_type=ChatType.GROUP,
+                components=[MessageComponent.text_component(text)],
+            ), schedule_turn=False)
+            assert result.message is not None
+            ids.append(result.message.id)
+        await service.process_session(session.id)
+        decision = (await store.list_decisions(session.id))[0]
+        assert decision.trigger_message_id == ids[1]
+        assert channel.messages[0].reply_to_message_id == ids[1]
+        assert channel.messages[0].source_refs == ids[:2]
+        assert recall.call_args.kwargs["query"] == "离线记账工具的延迟同步方案"
+        assert [item.id for item in learning.call_args.kwargs["messages"]] == ids[:2]
+        assert decision.score_detail["conversation_understanding"]["relevant_message_ids"] == ids[:2]
+    finally:
+        await service.stop()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_selected_conversation_survives_recent_history_window(settings, monkeypatch) -> None:
+    """引用链即使被后来的闲聊挤出最近窗口，也完整进入生成和召回。"""
+    settings.chat.recent_context_messages = 5
+    service, store, model = await build_service(settings)
+    recall = AsyncMock(return_value=[])
+    monkeypatch.setattr(service.memory, "retrieve", recall)
+    session = await service.create_session(
+        chat_type=ChatType.GROUP, display_name="引用上下文", external_chat_id="quote-context",
+        participants=[Participant(external_user_id=f"u{i}", display_name=f"成员{i}") for i in range(3)],
+    )
+    try:
+        source_id = ""
+        for index in range(8):
+            components = [MessageComponent.text_component("普通闲聊")]
+            if index == 0:
+                components = [MessageComponent.text_component("方案必须满足离线运行这个限制")]
+            elif index == 1:
+                components = [
+                    MessageComponent(type=ComponentType.QUOTE, message_id=source_id, target_id="u0"),
+                    MessageComponent(type=ComponentType.MENTION, target_id="agent"),
+                    MessageComponent.text_component("你觉得怎么解决？"),
+                ]
+            result = await service.ingest(InboundMessage(
+                platform=session.platform, account_id=session.account_id,
+                external_message_id=f"quote-{index}", external_chat_id=session.external_chat_id,
+                sender_id=f"u{min(index, 2)}", sender_name=f"成员{min(index, 2)}",
+                chat_type=ChatType.GROUP, components=components,
+            ), schedule_turn=False)
+            assert result.message is not None
+            if index == 0:
+                source_id = result.message.id
+        await service.process_session(session.id)
+        request = next(item for item in model.requests if not item.json_mode)
+        history_text = "\n".join(item.content or "" for item in request.messages[1:])
+        assert "离线运行这个限制" in history_text
+        assert "你觉得怎么解决" in history_text
+        assert "离线运行这个限制" in recall.call_args.kwargs["query"]
+        assert "普通闲聊" not in recall.call_args.kwargs["query"]
+    finally:
+        await service.stop()
+        await store.close()
 
 
 @pytest.mark.asyncio

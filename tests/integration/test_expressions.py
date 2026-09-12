@@ -35,6 +35,8 @@ class ExpressionCallingModel:
         self.loaded_runtimes: list[dict] = []
 
     async def complete(self, request: ModelRequest) -> ModelResult:
+        if "# 本轮对话理解任务" in (request.messages[0].content or ""):
+            return await FakeModelProvider().complete(request)
         if request.json_mode:
             return ModelResult(content='{"facts": []}')
         last = request.messages[-1]

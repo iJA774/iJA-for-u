@@ -54,6 +54,15 @@ class FakeModelProvider:
     async def complete(self, request: ModelRequest) -> ModelResult:
         self.requests.append(request)
         system_text = "\n".join(item.content or "" for item in request.messages if item.role == "system")
+        if "# 本轮对话理解任务" in system_text:
+            # 演示模型只重放本地候选；语义理解的质量由脚本化结果契约测试验证。
+            payload = self._last_untrusted_payload(request)
+            proposed = payload["proposed"]
+            selected = set(proposed["relevant_message_ids"])
+            proposed["retrieval_query"] = "\n".join(
+                item["content"] for item in payload["pending"] if item["message_id"] in selected
+            )[:1200]
+            return ModelResult(content=json.dumps(proposed, ensure_ascii=False))
         if "# 画像事实提取任务" in system_text:
             user_text = next(
                 (item.content or "" for item in reversed(request.messages) if item.role == "user"), ""
@@ -320,17 +329,26 @@ class FakeModelProvider:
             feedback = []
             if assistant_ids and positive_users:
                 for reference in payload.get("behavior_references", []):
+                    matching_users = [
+                        item for item in positive_users
+                        if item.get("message_id") in reference["followup_message_ids"]
+                    ]
+                    if not matching_users:
+                        continue
                     feedback.append(
                         {
                             "selection_id": reference.get("selection_id"),
+                            "response_to_message_id": reference["assistant_message_ids"][-1],
+                            "attribution": "behavior",
+                            "signal": "direct",
                             "adopted": True,
                             "status": "success",
                             "score_delta": 0.7,
                             "outcome": "用户给出积极回应并继续推进对话",
                             "reason": "助手采用了参考行为，用户随后给出明确积极反馈",
                             "source_message_ids": [
-                                assistant_ids[-1],
-                                str(positive_users[-1].get("message_id")),
+                                reference["assistant_message_ids"][-1],
+                                str(matching_users[-1].get("message_id")),
                             ],
                         }
                     )
