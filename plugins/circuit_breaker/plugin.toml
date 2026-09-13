@@ -1,0 +1,6 @@
+id = "circuit_breaker"
+name = "任务循环熔断器"
+kind = "tool_guard"
+version = "0.1.0"
+entrypoint = "runtime:create_plugin"
+activation = "automatic"

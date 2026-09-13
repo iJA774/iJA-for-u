@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from contextlib import nullcontext
 from time import perf_counter
+from typing import NoReturn
 
 from application.events import EventHub
 from application.replies import draft_from_model_text
 from config import AppSettings
-from domain.errors import InvalidModelResponseError, ToolLimitError
+from domain.errors import InvalidModelResponseError, ToolLimitError, ToolLoopAbortedError
 from domain.models import ReplyDraft, ToolExecution, ToolExecutionStatus, utc_now
 from observability import model_observation_scope, sensitive_log_scope
 from ports import ModelMessage, ModelProvider, ModelRequest, OperationsRepository
+from ports.tool_guard import GuardViolation, ToolGuard, ToolGuardLease, ToolObservation
 from tools import ToolContext, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -50,11 +54,13 @@ class ToolLoop:
         store: OperationsRepository,
         events: EventHub,
         registry: ToolRegistry,
+        guard_lease: ToolGuardLease | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.events = events
         self.registry = registry
+        self.guard_lease = guard_lease
 
     async def run(
         self,
@@ -64,9 +70,62 @@ class ToolLoop:
         context: ToolContext,
         allowed_tools: set[str],
     ) -> ReplyDraft:
+        """租用守卫并施加整次执行预算；退出后释放所有临时检测状态。"""
+
+        async with self.guard_lease() if self.guard_lease else nullcontext(()) as guards:
+            if not guards:
+                return await self._run(
+                    model=model, messages=messages, context=context,
+                    allowed_tools=allowed_tools, guards=(),
+                )
+            timeout_owner, timeout_guard = min(guards, key=lambda item: item[1].timeout_seconds)
+            expires_at = asyncio.get_running_loop().time() + timeout_guard.timeout_seconds
+            deadline = asyncio.timeout_at(expires_at)
+            try:
+                async with deadline:
+                    return await self._run(
+                        model=model, messages=messages, context=context,
+                        allowed_tools=allowed_tools, guards=guards,
+                        budget=(timeout_owner, expires_at),
+                    )
+            except TimeoutError:
+                # Provider 自己抛出的 TimeoutError 不应被误标成任务熔断。
+                if not deadline.expired():
+                    raise
+                await self._abort(context, timeout_owner, GuardViolation(
+                    "task_timeout", "任务执行时间达到上限，已停止本次任务"
+                ))
+
+    async def _abort(
+        self, context: ToolContext, plugin_id: str, violation: GuardViolation,
+    ) -> NoReturn:
+        """统一发布不含正文的终止事件，业务调用方沿现有失败路径落库。"""
+
+        payload = {
+            "schema_version": 1,
+            "session_id": context.session_id,
+            "turn_id": context.turn_id,
+            "schedule_run_id": context.schedule_run_id,
+            "plugin_id": plugin_id,
+            "reason": violation.reason,
+            "error_code": ToolLoopAbortedError.code,
+        }
+        logger.warning("任务执行已熔断", extra=payload)
+        await self.events.publish("tool_loop.tripped", payload)
+        raise ToolLoopAbortedError(violation.message, details=payload)
+
+    async def _run(
+        self, *, model: ModelProvider, messages: list[ModelMessage],
+        context: ToolContext, allowed_tools: set[str],
+        guards: tuple[tuple[str, ToolGuard], ...],
+        budget: tuple[str, float] | None = None,
+    ) -> ReplyDraft:
+        """执行原有工具协议，在调用审计完成后观测并在下一次副作用前终止。"""
+
         call_count = 0
         transcript = list(messages)
         for _ in range(self.settings.tools.max_rounds):
+            await self._check_budget(context, budget)
             # load_skill 会在同一轮上下文中更新 loaded_skills；每轮重新投影定义，
             # 使模型先读取 Skill 指令，再看到该 Skill 的原子工具。
             definitions = self.registry.definitions(
@@ -95,6 +154,7 @@ class ToolLoop:
                         tool_choice="auto" if definitions else None,
                     )
                 )
+            await self._check_budget(context, budget)
             if not result.tool_calls:
                 if not result.content:
                     raise InvalidModelResponseError("工具循环结束时模型没有返回最终文本")
@@ -133,6 +193,7 @@ class ToolLoop:
                 ModelMessage(role="assistant", content=result.content, tool_calls=result.tool_calls)
             )
             for tool_call in result.tool_calls:
+                await self._check_budget(context, budget)
                 call_count += 1
                 if call_count > self.settings.tools.max_calls:
                     raise ToolLimitError("本轮工具调用次数超过上限")
@@ -187,6 +248,15 @@ class ToolLoop:
                                 arguments,
                                 context,
                             )
+                    except asyncio.CancelledError:
+                        # 取消不能伪造回滚成功；外部动作可能已生效，保留明确审计。
+                        execution.status = ToolExecutionStatus.FAILED
+                        execution.error_code = "tool_execution_cancelled"
+                        execution.error_message = "工具执行被取消，外部副作用是否完成需核实"
+                        execution.completed_at = utc_now()
+                        await self.store.save_tool_execution(execution)
+                        await self.events.publish("tool.failed", _public_execution_payload(execution))
+                        raise
                     except Exception as exc:
                         execution.status = ToolExecutionStatus.FAILED
                         execution.error_code = getattr(exc, "code", "tool_execution_failed")
@@ -241,8 +311,28 @@ class ToolLoop:
                             },
                         )
                         tool_result = {"ok": True, **outcome.value}
+                        await self._check_budget(context, budget)
                         if outcome.reply_draft is not None:
                             return outcome.reply_draft
+                await self._check_budget(context, budget)
+                if guards:
+                    # 使用真实成功状态和未截断结果；模型可见 payload 的 ok 字段不能反向改变审计。
+                    observation = ToolObservation(
+                        name=tool_call.name,
+                        arguments=tool_call.arguments,
+                        result=json.dumps(
+                            execution.result if execution.status == ToolExecutionStatus.COMPLETED
+                            else {"error_code": execution.error_code},
+                            ensure_ascii=False,
+                        ),
+                        succeeded=execution.status == ToolExecutionStatus.COMPLETED,
+                    )
+                    for plugin_id, guard in guards:
+                        violation = guard.observe(observation)
+                        if violation is not None:
+                            if not isinstance(violation, GuardViolation):
+                                raise TypeError(f"执行守卫必须返回 GuardViolation: {plugin_id}")
+                            await self._abort(context, plugin_id, violation)
                 encoded = json.dumps(tool_result, ensure_ascii=False)
                 if len(encoded) > 32_000:
                     encoded = json.dumps(
@@ -259,3 +349,13 @@ class ToolLoop:
                     )
                 transcript.append(ModelMessage(role="tool", content=encoded, tool_call_id=tool_call.id))
         raise ToolLimitError("模型工具循环超过最大轮次")
+
+    async def _check_budget(
+        self, context: ToolContext, budget: tuple[str, float] | None,
+    ) -> None:
+        """依赖吞掉取消后若归还控制权，仍拒绝迟到草稿及后续调用。"""
+
+        if budget is not None and asyncio.get_running_loop().time() >= budget[1]:
+            await self._abort(context, budget[0], GuardViolation(
+                "task_timeout", "任务执行时间达到上限，已停止本次任务"
+            ))

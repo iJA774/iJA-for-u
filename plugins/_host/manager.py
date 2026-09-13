@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import inspect
 import logging
+import math
 import re
 import sys
 import types
@@ -23,6 +24,7 @@ from domain.errors import NotFoundError
 from domain.models import DeliveryReceipt, MessageComponent, OutboundMessage, SessionView
 from ports import ChannelAdapter, ChannelRuntimeContext, ModelProvider
 from ports.egress import EgressEnvelope, EgressHandler, EgressPlugin, EgressPluginContext
+from ports.tool_guard import ToolGuardPlugin, ToolGuardPluginContext
 
 from .capabilities import ChannelCapabilityRegistry
 from .contracts import (
@@ -73,10 +75,11 @@ class PluginRuntimeSnapshot:
     plugins: dict[str, ChannelPlugin]
     ingress_plugins: dict[str, IngressPlugin]
     egress_plugins: dict[str, EgressPlugin]
+    tool_guard_plugins: dict[str, ToolGuardPlugin]
     ingest_handler: IngressHandler
     typing_handler: TypingHandler
     egress_handler: EgressHandler
-    started: list[ChannelPlugin | IngressPlugin | EgressPlugin]
+    started: list[ChannelPlugin | IngressPlugin | EgressPlugin | ToolGuardPlugin]
     channel_capabilities: ChannelCapabilityRegistry
     phased_plugins: set[int] = field(default_factory=set)
     owner: ChannelPluginManager | None = None
@@ -191,7 +194,8 @@ class ChannelPluginManager:
         self.plugins: dict[str, ChannelPlugin] = {}
         self.ingress_plugins: dict[str, IngressPlugin] = {}
         self.egress_plugins: dict[str, EgressPlugin] = {}
-        self._started: list[ChannelPlugin | IngressPlugin | EgressPlugin] = []
+        self.tool_guard_plugins: dict[str, ToolGuardPlugin] = {}
+        self._started: list[ChannelPlugin | IngressPlugin | EgressPlugin | ToolGuardPlugin] = []
         self._owned_snapshot: PluginRuntimeSnapshot | None = None
         self._admitted_event: ContextVar[_EventAdmissionLease | None] = ContextVar(
             f"plugin_generation_{_generation}_event",
@@ -206,6 +210,7 @@ class ChannelPluginManager:
             plugins=self.plugins,
             ingress_plugins=self.ingress_plugins,
             egress_plugins=self.egress_plugins,
+            tool_guard_plugins=self.tool_guard_plugins,
             ingest_handler=self._ingest_handler,
             typing_handler=self._typing_handler,
             egress_handler=self._egress_handler,
@@ -306,6 +311,13 @@ class ChannelPluginManager:
                 continue
             self.egress_plugins[manifest.plugin_id] = plugin
         self._compose_egress_pipeline()
+
+        for manifest in manifests:
+            if manifest.kind != "tool_guard":
+                continue
+            plugin = self._try_load_plugin(manifest, self._load_tool_guard_plugin, unavailable)
+            if plugin is not None:
+                self.tool_guard_plugins[manifest.plugin_id] = plugin
 
         for manifest in manifests:
             if manifest.kind != "channel":
@@ -450,6 +462,42 @@ class ChannelPluginManager:
             typing = partial(self._call_typing_plugin, plugin, call_next=typing)
         self._ingest_handler = ingest
         self._typing_handler = typing
+
+    def _load_tool_guard_plugin(self, manifest: RuntimePluginManifest) -> ToolGuardPlugin:
+        """使用通用清单加载守卫，不授予外部副作用能力。"""
+
+        plugin = self._load_factory(manifest)(ToolGuardPluginContext(
+            plugin_id=manifest.plugin_id,
+            plugin_root=manifest.plugin_root,
+            options=dict(self.options.get(manifest.plugin_id, {})),
+        ))
+        if inspect.isawaitable(plugin):
+            raise TypeError("ToolGuard 插件工厂必须是同步函数")
+        if getattr(plugin, "plugin_id", None) != manifest.plugin_id:
+            raise ValueError(f"插件工厂返回的身份无效: {manifest.plugin_id}")
+        if not all(callable(getattr(plugin, name, None)) for name in ("start", "stop", "create_guard")):
+            raise TypeError(f"执行守卫插件契约无效: {manifest.plugin_id}")
+        return cast(ToolGuardPlugin, plugin)
+
+    @asynccontextmanager
+    async def tool_guards(self):
+        """整个任务租用同一代插件；reload 仅影响下一次任务。"""
+
+        async with self._lease_current() as snapshot:
+            guards = []
+            for plugin_id, plugin in snapshot.tool_guard_plugins.items():
+                guard = plugin.create_guard()
+                timeout = getattr(guard, "timeout_seconds", None)
+                if (
+                    isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float))
+                    or not math.isfinite(timeout)
+                    or timeout <= 0
+                    or not callable(getattr(guard, "observe", None))
+                ):
+                    raise TypeError(f"执行守卫状态契约无效: {plugin_id}")
+                guards.append((plugin_id, guard))
+            yield tuple(guards)
 
     def _compose_egress_pipeline(self) -> None:
         """按配置逆序嵌套输出过滤插件；无插件时退化为直通透传。"""
@@ -731,7 +779,7 @@ class ChannelPluginManager:
 
     @staticmethod
     def _lifecycle_method(
-        plugin: ChannelPlugin | IngressPlugin | EgressPlugin,
+        plugin: ChannelPlugin | IngressPlugin | EgressPlugin | ToolGuardPlugin,
         name: str,
     ) -> Callable[[], Awaitable[None]] | None:
         """取得可选异步生命周期方法；返回值契约在实际 await 时 fail-fast。"""
@@ -744,7 +792,7 @@ class ChannelPluginManager:
     @classmethod
     def _uses_phased_lifecycle(
         cls,
-        plugin: ChannelPlugin | IngressPlugin | EgressPlugin,
+        plugin: ChannelPlugin | IngressPlugin | EgressPlugin | ToolGuardPlugin,
     ) -> bool:
         """显式生命周期必须四阶段齐备，避免激活资源没有对应清理 owner。"""
 
@@ -770,6 +818,7 @@ class ChannelPluginManager:
             for plugin in (
                 *snapshot.ingress_plugins.values(),
                 *snapshot.egress_plugins.values(),
+                *snapshot.tool_guard_plugins.values(),
                 *snapshot.plugins.values(),
             ):
                 if not self._uses_phased_lifecycle(plugin):
@@ -798,6 +847,7 @@ class ChannelPluginManager:
                 for plugin in (
                     *snapshot.ingress_plugins.values(),
                     *snapshot.egress_plugins.values(),
+                    *snapshot.tool_guard_plugins.values(),
                     *snapshot.plugins.values(),
                 ):
                     # 先登记再调用，覆盖“已创建任务/连接后 start 抛错”的部分失败。
@@ -882,7 +932,7 @@ class ChannelPluginManager:
         snapshot.started.clear()
         snapshot.ready = False
         snapshot.running = False
-        failed: list[ChannelPlugin | IngressPlugin | EgressPlugin] = []
+        failed: list[ChannelPlugin | IngressPlugin | EgressPlugin | ToolGuardPlugin] = []
         failures: list[tuple[str, BaseException]] = []
         cancelled: asyncio.CancelledError | None = None
         for plugin in plugins:
@@ -1055,6 +1105,7 @@ class ChannelPluginManager:
                 self.plugins = snapshot.plugins
                 self.ingress_plugins = snapshot.ingress_plugins
                 self.egress_plugins = snapshot.egress_plugins
+                self.tool_guard_plugins = snapshot.tool_guard_plugins
                 self._ingest_handler = snapshot.ingest_handler
                 self._typing_handler = snapshot.typing_handler
                 self._egress_handler = snapshot.egress_handler
@@ -1112,6 +1163,7 @@ class ChannelPluginManager:
                             *snapshot.plugins,
                             *snapshot.ingress_plugins,
                             *snapshot.egress_plugins,
+                            *snapshot.tool_guard_plugins,
                         }
                     ),
                 }

@@ -73,3 +73,9 @@ class ToolExecutionError(IJAError):
 
 class ToolLimitError(ToolExecutionError):
     code = "tool_limit_exceeded"
+
+
+class ToolLoopAbortedError(ToolLimitError):
+    """执行守卫终止本次任务，调用方不得将其作为工具失败继续喂给模型。"""
+
+    code = "tool_loop_circuit_open"

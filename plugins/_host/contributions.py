@@ -26,7 +26,7 @@ _AUTHORIZATION_SCOPE = re.compile(
 )
 _ENTRYPOINT_PART = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PLACEHOLDERS = {"{python}", "{plugin_root}", "{project_root}"}
-_RUNTIME_KINDS = frozenset({"channel", "ingress", "egress"})
+_RUNTIME_KINDS = frozenset({"channel", "ingress", "egress", "tool_guard"})
 _CONTRIBUTION_KINDS = frozenset({"extension"})
 _ACTIVATION_MODES = frozenset({"automatic", "explicit"})
 

@@ -62,7 +62,7 @@ only-include = ["src", "plugins"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "plugins"]
 addopts = "-q --basetemp=.pytest-tmp"
 
 [tool.ruff]

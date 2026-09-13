@@ -114,6 +114,7 @@ async def test_onebot_manifest_always_loads_delayed_reply_dependency(
         assert [plugin.plugin_id for plugin in runtime.platform_plugins._started] == [
             "delayed_reply",
             "filter",
+            "circuit_breaker",
             "onebot",
         ]
     finally:

@@ -1183,6 +1183,7 @@ def build_runtime(
         capability_registry=channel_capabilities,
     )
     chat.set_egress_filter(platform_plugins.egress_filter)
+    chat.tool_loop.guard_lease = platform_plugins.tool_guards
     scheduler = ScheduleScheduler(
         settings=settings,
         store=store,
